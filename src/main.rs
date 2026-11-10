@@ -1,5 +1,6 @@
 mod adblock;
 mod downloads;
+mod filterlists;
 mod menus;
 mod settings;
 mod suggest;
@@ -9,6 +10,7 @@ use settings::{is_address, quote, to_url, Settings};
 use suggest::{Kind, Row, Visit};
 use std::{
     cell::{Cell, RefCell},
+    sync::atomic::{AtomicBool, Ordering},
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
@@ -48,13 +50,25 @@ const PLUS_W: i32 = 40;
 const PIN_W: i32 = 40;
 const DRAG_W: i32 = 48;
 
-// shortcut: no history page, private mode or tab dragging.
+
+
+/// Set for `--private`: nothing is remembered once the window closes.
+static PRIVATE: AtomicBool = AtomicBool::new(false);
+
+fn private() -> bool {
+    PRIVATE.load(Ordering::Relaxed)
+}
+
+/// The URL given on the command line, ignoring flags.
+fn start_arg() -> Option<String> {
+    std::env::args().skip(1).find(|a| !a.starts_with('-'))
+}
 
 #[derive(Clone, Copy)]
 enum Cmd {
     NewTab, CloseTab, Reopen, Reload, Back, Forward, Home, FocusUrl, Escape,
     Find, FindNext(bool), FindTyped, CloseFind, Zoom(i8), Print, Devtools, Bookmark,
-    ToggleBookmarksBar, NextTab(i32), NthTab(usize), SuggestMove(i32), EnterUrl, Settings, History, Quit,
+    ToggleBookmarksBar, NextTab(i32), NthTab(usize), SuggestMove(i32), EnterUrl, Settings, History, NewPrivate, Quit,
 }
 
 struct Tab {
@@ -188,6 +202,7 @@ fn settings_html(s: &Settings) -> String {
         .replace("__ZOOMS__", &format!("[{}]", zooms.join(",")))
         .replace("__ADBLOCK_READY__", if adblock::is_ready() { "true" } else { "false" })
         .replace("__VERSION__", env!("CARGO_PKG_VERSION"))
+        .replace("__DEFAULT__", if is_default_browser() { "true" } else { "false" })
 }
 
 fn history_html(history: &[Visit]) -> String {
@@ -198,6 +213,22 @@ fn history_html(history: &[Visit]) -> String {
 }
 
 /// Draw an internal page into a tab from the current settings and history.
+/// Is Zolith the system's default web browser? (needs the installed zolith.desktop)
+fn is_default_browser() -> bool {
+    std::process::Command::new("xdg-settings")
+        .args(["check", "default-web-browser", "zolith.desktop"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "yes")
+}
+
+fn make_default_browser() -> bool {
+    std::process::Command::new("xdg-settings")
+        .args(["set", "default-web-browser", "zolith.desktop"])
+        .status()
+        .is_ok_and(|s| s.success())
+        && is_default_browser()
+}
+
 fn load_internal(app: &Sh, wv: &webkit2gtk::WebView, page: Internal) {
     let Ok((s, h)) = app.try_borrow().map(|a| (a.settings.clone(), if page == Internal::History { a.history.clone() } else { vec![] }))
         else { return };
@@ -285,6 +316,9 @@ impl App {
     }
 
     fn save_session(&self) {
+        if private() {
+            return;
+        }
         let cur = self.tabs.iter().position(|t| t.id == self.cur).unwrap_or(0);
         let mut text = format!("{cur}\n");
         for t in &self.tabs {
@@ -318,7 +352,8 @@ impl App {
         let marked = self.marks.iter().any(|m| m.0 == t.url);
         self.star_img.set_from_icon_name(
             Some(if marked { "starred-symbolic" } else { "non-starred-symbolic" }), gtk::IconSize::Menu);
-        self.win.set_title(&if t.title.is_empty() { "Zolith".to_string() } else { format!("{} — Zolith", t.title) });
+        let app_name = if private() { "Zolith (Private)" } else { "Zolith" };
+        self.win.set_title(&if t.title.is_empty() { app_name.to_string() } else { format!("{} — {app_name}", t.title) });
     }
 
     fn select(&mut self, id: u32) {
@@ -536,6 +571,12 @@ fn run(app: &Sh, c: Cmd) {
             if let Ok(id) = id { close_tab(app, id) }
         }
         Cmd::Quit => std::process::exit(0),
+        Cmd::NewPrivate => {
+            // a separate process: its own window, and nothing it does is saved
+            if let Err(e) = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "zolith".into())).arg("--private").spawn() {
+                eprintln!("zolith: could not open a private window: {e}");
+            }
+        }
         Cmd::Settings => open_internal(app, Internal::Settings),
         Cmd::History => open_internal(app, Internal::History),
         Cmd::SuggestMove(d) => suggest_move(app, d),
@@ -838,6 +879,10 @@ fn handle_ipc(app: &Sh, id: u32, msg: &str) {
             }
         }
         (Internal::Settings, Some("pick-download-dir"), _, _) => pick_download_dir(app, &wv),
+        (Internal::Settings, Some("make-default"), _, _) => {
+            let ok = make_default_browser();
+            run_js(&wv, &format!("window.zolithDefault && zolithDefault({ok})"));
+        }
         (Internal::History, Some("history-delete"), Some(url), _) => with(app, |a| {
             suggest::delete(&mut a.history, url);
             suggest::save(&a.history);
@@ -969,7 +1014,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     let (id, stack, tabs_box, ctx, s, first, find_entry) = {
         let Ok(mut a) = app.try_borrow_mut() else { return None };
         a.next_id += 1;
-        let first = !a.downloads_hooked;
+        let first = !a.downloads_hooked || private();
         a.downloads_hooked = true;
         (a.next_id, a.stack.clone(), a.tabs_box.clone(), a.ctx.clone(), a.settings.clone(), first, a.find_entry.clone())
     };
@@ -984,6 +1029,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     let mut ctx = ctx.borrow_mut();
     let mut b = WebViewBuilder::new_with_web_context(&mut ctx)
         .with_devtools(true)
+        .with_incognito(private())
         .with_back_forward_navigation_gestures(true)
         .with_document_title_changed_handler(move |t| with(&a1, |a| a.set_title(id, &t)))
         .with_new_window_req_handler(move |u, _| {
@@ -1029,7 +1075,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     if first {
         if let Some(c) = wv.context() {
             downloads::hook(app, &c);
-            if c.favicon_database_directory().is_none() {
+            if !private() && c.favicon_database_directory().is_none() {
                 c.set_favicon_database_directory(Some(&settings::data_dir().join("favicons").to_string_lossy()));
             }
         }
@@ -1217,20 +1263,55 @@ fn icon_button(icon: &str) -> (gtk::Button, gtk::Image) {
     (b, img)
 }
 
+/// Make a second `zolith` hand its URL to the running one and exit, so links opened from
+/// other apps become tabs instead of a second window fighting over the same files.
+/// `ZOLITH_SINGLE_INSTANCE=0` turns this off; `ZOLITH_APP_ID` changes the shared name (for tests).
+fn single_instance() -> Option<(gio::Application, gio::ApplicationHoldGuard)> {
+    if private() || std::env::var("ZOLITH_SINGLE_INSTANCE").is_ok_and(|v| v == "0") {
+        return None;
+    }
+    let id = std::env::var("ZOLITH_APP_ID").unwrap_or_else(|_| "io.github.ash262049.Zolith".into());
+    if !gio::Application::id_is_valid(&id) {
+        return None;
+    }
+    let app = gio::Application::new(Some(&id), gio::ApplicationFlags::HANDLES_OPEN);
+    // without a session bus we just run on our own
+    app.register(None::<&gio::Cancellable>).ok()?;
+    if app.is_remote() {
+        let url = start_arg().map(|a| match internal(&a) {
+            Some(p) => p.uri().to_string(),
+            None => to_url(&a, Settings::load().search_template()),
+        });
+        match url {
+            Some(u) => app.open(&[gio::File::for_uri(&u)], ""),
+            None => app.activate(),
+        }
+        std::process::exit(0);
+    }
+    // tao owns the main loop, so we never `run()`; the hold keeps us registered
+    let guard = app.hold();
+    Some((app, guard))
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "--private") {
+        PRIVATE.store(true, Ordering::Relaxed);
+        suggest::READ_ONLY.store(true, Ordering::Relaxed);
+    }
     match std::env::args().nth(1).as_deref() {
         Some("-V" | "--version") => return println!("zolith {}", env!("CARGO_PKG_VERSION")),
         Some("-h" | "--help") => {
             return println!(
-                "zolith {}\nA fast, minimal web browser.\n\nUSAGE:\n    zolith [URL]\n\nOPTIONS:\n    -h, --help       Show this help\n    -V, --version    Show the version\n\nSettings: open zolith://settings (Ctrl+,)",
+                "zolith {}\nA fast, minimal web browser.\n\nUSAGE:\n    zolith [--private] [URL]\n\nOPTIONS:\n        --private    Open a private window: nothing is saved\n    -h, --help       Show this help\n    -V, --version    Show the version\n\nSettings: open zolith://settings (Ctrl+,)",
                 env!("CARGO_PKG_VERSION")
             )
         }
         _ => {}
     }
+    let single = single_instance();
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("Zolith")
+        .with_title(if private() { "Zolith (Private)" } else { "Zolith" })
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
         .with_visible(false)
         .build(&event_loop)
@@ -1406,6 +1487,14 @@ fn main() {
     { let w = win.clone(); wmin.connect_clicked(move |_| w.iconify()); }
     wmax.connect_clicked(move |_| toggle_max());
     wclose.connect_clicked(|_| std::process::exit(0));
+    if private() {
+        titlebar.style_context().add_class("private");
+        let badge = gtk::Label::new(Some("Private"));
+        badge.style_context().add_class("private-badge");
+        badge.set_valign(gtk::Align::Center);
+        controls.pack_start(&badge, false, false, 8);
+        controls.reorder_child(&badge, 0);
+    }
     win.set_titlebar(Some(&titlebar));
 
     // ---- state ----
@@ -1484,7 +1573,7 @@ fn main() {
         ("New tab", Cmd::NewTab), ("Reopen closed tab", Cmd::Reopen), ("Bookmark this page", Cmd::Bookmark),
         ("Find in page", Cmd::Find), ("Zoom in", Cmd::Zoom(1)), ("Zoom out", Cmd::Zoom(-1)),
         ("Reset zoom", Cmd::Zoom(0)), ("Print…", Cmd::Print), ("Developer tools", Cmd::Devtools),
-        ("History", Cmd::History), ("Settings", Cmd::Settings), ("Quit", Cmd::Quit),
+        ("New private window", Cmd::NewPrivate), ("History", Cmd::History), ("Settings", Cmd::Settings), ("Quit", Cmd::Quit),
     ] {
         let b = gtk::Button::with_label(label);
         b.set_relief(gtk::ReliefStyle::None);
@@ -1513,6 +1602,7 @@ fn main() {
                     (false, Some(d @ '1'..='9')) => Some(Cmd::NthTab(d as usize - '1' as usize)),
                     (false, Some('t')) => Some(Cmd::NewTab),
                     (true, Some('t')) => Some(Cmd::Reopen),
+                    (true, Some('n')) => Some(Cmd::NewPrivate),
                     (false, Some('w')) => Some(Cmd::CloseTab),
                     (false, Some('l')) => Some(Cmd::FocusUrl),
                     (false, Some('r')) => Some(Cmd::Reload),
@@ -1578,8 +1668,9 @@ fn main() {
         let s = &a.settings;
         let t = s.search_template().to_string();
         let page = |u: &str| match internal(u) { Some(p) => p.uri().to_string(), None => to_url(u, &t) };
-        match std::env::args().nth(1) {
+        match start_arg() {
             Some(arg) => (vec![Some(page(&arg))], 0),
+            None if private() => (vec![None], 0),
             None => match s.startup.as_str() {
                 "restore" => {
                     let (cur, urls) = load_session();
@@ -1605,8 +1696,21 @@ fn main() {
     with(&app, |a| a.sync_bars());
     window.set_visible(true);
 
+    // a second `zolith URL` (or a link from another app) arrives here
+    if let Some((gapp, _)) = &single {
+        let a = app.clone();
+        gapp.connect_open(move |_, files, _| {
+            for f in files {
+                new_tab(&a, Some(f.uri().to_string()), true);
+            }
+            a.try_borrow().ok().map(|x| x.win.present());
+        });
+        let a = app.clone();
+        gapp.connect_activate(move |_| { a.try_borrow().ok().map(|x| x.win.present()); });
+    }
+
     event_loop.run(move |event, _, flow| {
-        let _keep = &app;
+        let _keep = (&app, &single);
         *flow = ControlFlow::Wait;
         if let Event::WindowEvent { event: WindowEvent::CloseRequested, .. } = event {
             *flow = ControlFlow::Exit;
@@ -1629,7 +1733,7 @@ mod tests {
     #[test]
     fn settings_page_is_filled_in() {
         let html = settings_html(&Settings::default());
-        for p in ["__STATE__", "__ENGINES__", "__ZOOMS__", "__ADBLOCK_READY__", "__VERSION__"] {
+        for p in ["__STATE__", "__ENGINES__", "__ZOOMS__", "__ADBLOCK_READY__", "__VERSION__", "__DEFAULT__"] {
             assert!(!html.contains(p), "{p} left in page");
         }
         assert!(html.contains(r#"const ENGINES = ["DuckDuckGo","Google","Bing","Brave","Startpage","Custom"];"#));

@@ -146,6 +146,7 @@
   <nav id="nav">
     <a href="#" data-page="search"><svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>Search engine</a>
     <a href="#" data-page="startup"><svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42A6.92 6.92 0 0 1 19 12c0 3.87-3.13 7-7 7A6.995 6.995 0 0 1 7.58 6.58L6.17 5.17A8.932 8.932 0 0 0 3 12a9 9 0 0 0 18 0c0-2.74-1.23-5.18-3.17-6.83z"/></svg>On startup</a>
+    <a href="#" data-page="default"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1 17.93A8 8 0 0 1 4.07 13H8v1a2 2 0 0 0 2 2v3.93zM13 19.93V16a2 2 0 0 0 2-2v-1h4.93A8 8 0 0 1 13 19.93zM19.93 11H16V9a2 2 0 0 0-2-2h-1V4.07A8 8 0 0 1 19.93 11zM11 4.07V7H9a2 2 0 0 0-2 2v2H4.07A8 8 0 0 1 11 4.07z"/></svg>Default browser</a>
     <a href="#" data-page="appearance"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0 0 18c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>Appearance</a>
     <a href="#" data-page="privacy"><svg viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>Privacy and security</a>
     <a href="#" data-page="downloads"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>Downloads</a>
@@ -180,6 +181,16 @@
         <label class="radio"><input type="radio" name="startup" value="page">Open a specific page</label>
         <div class="sub" id="startup-row">
           <input type="text" id="startup_page" placeholder="Enter URL" spellcheck="false">
+        </div>
+      </div>
+    </section>
+
+    <section data-page="default">
+      <h2>Default browser</h2>
+      <div class="card">
+        <div class="row">
+          <div class="label"><span id="def-label"></span><div class="secondary" id="def-sub">Links from other apps will open in Zolith</div></div>
+          <button class="btn action" id="make-default">Make default</button>
         </div>
       </div>
     </section>
@@ -281,6 +292,7 @@
   const ENGINES = __ENGINES__;
   const ZOOMS = __ZOOMS__;
   const ADBLOCK_READY = __ADBLOCK_READY__;
+  let IS_DEFAULT = __DEFAULT__;
 
   const $ = (id) => document.getElementById(id);
   const send = (...parts) => window.ipc.postMessage(parts.map((p) => String(p).replace(/\n/g, ' ')).join('\n'));
@@ -366,6 +378,19 @@
   window.zolithCleared = (ok) => {
     if (ok) { dlg.close(); } else { $('do-clear').disabled = false; $('do-clear').textContent = 'Try again'; }
   };
+
+  // ---- default browser ----
+  const syncDefault = () => {
+    $('def-label').textContent = IS_DEFAULT ? 'Zolith is your default browser' : 'Zolith is not your default browser';
+    $('make-default').style.display = IS_DEFAULT ? 'none' : '';
+    $('make-default').disabled = false;
+  };
+  $('make-default').onclick = () => { $('make-default').disabled = true; send('make-default'); };
+  window.zolithDefault = (ok) => {
+    IS_DEFAULT = ok; syncDefault();
+    if (!ok) { $('def-sub').className = 'error'; $('def-sub').textContent = 'Could not change it. Install Zolith with install.sh so it has a launcher entry, then try again.'; }
+  };
+  syncDefault();
 
   // ---- downloads ----
   const showDir = () => { $('download-dir').textContent = S.download_dir || '~/Downloads'; };

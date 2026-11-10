@@ -73,3 +73,6 @@ list.suggest image { color: #9aa0a6; }
 list.suggest .detail { color: #9aa0a6; font-size: 12px; }
 
 .toolbar button.busy { color: #00ddff; }
+
+.titlebar-box.private { background: #2a1f3d; }
+.private-badge { background: #6b46c1; color: #fbfbfe; border-radius: 10px; padding: 1px 10px; font-size: 11px; margin-right: 6px; }

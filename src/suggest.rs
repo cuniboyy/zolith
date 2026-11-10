@@ -4,7 +4,10 @@
 use crate::settings;
 use gtk::glib;
 use soup::prelude::*;
-use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+use std::{fs, path::PathBuf, sync::atomic::{AtomicBool, Ordering}, time::{SystemTime, UNIX_EPOCH}};
+
+/// Private windows only read history: nothing is added, changed or saved.
+pub static READ_ONLY: AtomicBool = AtomicBool::new(false);
 
 /// Oldest/least-used entries are dropped past this many.
 const MAX_HISTORY: usize = 3000;
@@ -82,6 +85,9 @@ pub fn load() -> Vec<Visit> {
 }
 
 pub fn save(v: &[Visit]) {
+    if READ_ONLY.load(Ordering::Relaxed) {
+        return;
+    }
     let _ = fs::create_dir_all(settings::config_dir());
     if let Err(e) = fs::write(path(), serialize(v)) {
         eprintln!("zolith: could not save history: {e}");
@@ -90,7 +96,7 @@ pub fn save(v: &[Visit]) {
 
 /// Count a visit to `url` (fragment ignored), keeping the list bounded.
 pub fn record(v: &mut Vec<Visit>, url: &str, title: &str, now: u64) {
-    if !recordable(url) {
+    if !recordable(url) || READ_ONLY.load(Ordering::Relaxed) {
         return;
     }
     let url = url.split('#').next().unwrap_or(url);
@@ -121,6 +127,9 @@ pub fn delete(v: &mut Vec<Visit>, url: &str) {
 
 /// Update the stored title of the page at `url` once it is known.
 pub fn set_title(v: &mut [Visit], url: &str, title: &str) {
+    if READ_ONLY.load(Ordering::Relaxed) {
+        return;
+    }
     let url = url.split('#').next().unwrap_or(url);
     if let Some(e) = v.iter_mut().find(|e| e.url == url) {
         e.title = title.into();
