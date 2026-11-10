@@ -51,8 +51,6 @@ pub struct Settings {
     pub download_dir: String,
     /// One of `THEMES`.
     pub theme: String,
-    /// Tabs in a column on the left instead of along the top (applies after a restart).
-    pub vertical_tabs: bool,
     /// The first-run setup guide has been completed.
     pub welcome_done: bool,
 }
@@ -63,7 +61,7 @@ impl Default for Settings {
             engine: ENGINES[0].0.into(), custom: String::new(), home: String::new(),
             show_home: true, show_bookmarks: true, adblock: true, community: true, suggest: true,
             startup: STARTUPS[0].into(), startup_page: String::new(), zoom: 100, download_dir: String::new(),
-            theme: THEMES[0].0.into(), vertical_tabs: false, welcome_done: false,
+            theme: THEMES[0].0.into(), welcome_done: false,
         }
     }
 }
@@ -94,14 +92,13 @@ impl Settings {
             "zoom" => match v.parse() { Ok(z) if ZOOMS.contains(&z) => self.zoom = z, _ => return false },
             "download_dir" if v.is_empty() || v.starts_with('/') => self.download_dir = v.into(),
             "theme" if THEMES.iter().any(|t| t.0 == v) => self.theme = v.into(),
-            "show_home" | "show_bookmarks" | "adblock" | "community" | "suggest" | "vertical_tabs" | "welcome_done" => {
+            "show_home" | "show_bookmarks" | "adblock" | "community" | "suggest" | "welcome_done" => {
                 let Some(b) = flag(v) else { return false };
                 match key {
                     "show_home" => self.show_home = b,
                     "show_bookmarks" => self.show_bookmarks = b,
                     "suggest" => self.suggest = b,
                     "community" => self.community = b,
-                    "vertical_tabs" => self.vertical_tabs = b,
                     "welcome_done" => self.welcome_done = b,
                     _ => self.adblock = b,
                 }
@@ -143,7 +140,7 @@ impl Settings {
             ("startup", self.startup.clone()),
             ("startup_page", self.startup_page.clone()), ("zoom", self.zoom.to_string()),
             ("download_dir", self.download_dir.clone()), ("theme", self.theme.clone()),
-            ("vertical_tabs", self.vertical_tabs.to_string()), ("welcome_done", self.welcome_done.to_string()),
+            ("welcome_done", self.welcome_done.to_string()),
         ]
     }
 

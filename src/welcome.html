@@ -48,10 +48,6 @@
   <section>
     <h2>Look</h2>
     <div class="choices" id="themes"></div>
-    <div class="row" style="margin-top:14px">
-      <div>Vertical tabs<div class="sub">Tabs in a column on the left (applies after a restart)</div></div>
-      <label class="toggle"><input type="checkbox" id="vertical" aria-label="Vertical tabs"><span class="bar"></span><span class="knob"></span></label>
-    </div>
   </section>
 
   <section>
@@ -93,8 +89,6 @@
   pick($('engines'), ENGINES.filter((e) => e !== 'Custom').map((e) => [e, e]), () => S.engine, (e) => set('engine', e));
   pick($('themes'), THEMES, () => S.theme, (t) => { set('theme', t); document.documentElement.style.setProperty('--acc', THEMES.find((x) => x[0] === t)[2]); });
   document.documentElement.style.setProperty('--acc', (THEMES.find((x) => x[0] === S.theme) || THEMES[0])[2]);
-  $('vertical').checked = S.vertical_tabs === 'true';
-  $('vertical').onchange = () => set('vertical_tabs', $('vertical').checked);
 
   $('import').onclick = () => send('import-bookmarks');
   window.zolithBookmarks = (r) => {
