@@ -48,6 +48,7 @@ No Electron, no Chromium: just GTK and your system's WebKit.
 ![Settings](docs/screenshots/settings.png)
 
 **Everything else**
+- A new tab page with your most-visited sites
 - Right-click menus for links, images, selected text and pages
 - A downloads panel with progress, cancel, open and show-in-folder
 - A history page (`Ctrl+H`) and Back/Forward history menus (right-click the buttons)
@@ -168,7 +169,7 @@ Zolith is young. Honest list of what it doesn't do yet:
 | `src/downloads.rs`, `src/menus.rs`, `src/bookmarks.rs` | Downloads panel, right-click menus, bookmark import/export |
 | `install.sh`, `packaging/` | User-level installer and launcher entry |
 
-Run the tests with `cargo test`. `scripts/ui-test.sh` is an end-to-end smoke test for Hyprland sessions.
+Run the tests with `cargo test`. `scripts/ui-test.sh` is an end-to-end smoke test for Hyprland sessions. GitHub builds and tests every push.
 
 ## Roadmap
 

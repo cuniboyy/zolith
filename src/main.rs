@@ -224,8 +224,18 @@ fn theme_css(theme: &str) -> String {
     )
 }
 
-fn newtab_html(s: &Settings) -> String {
-    NEWTAB.replace("__SEARCH__", &quote(s.search_template()))
+fn newtab_html(s: &Settings, top: &[(String, String)]) -> String {
+    let tiles: Vec<String> = top.iter().map(|(u, t)| format!("[{},{}]", quote(u), quote(t))).collect();
+    NEWTAB
+        .replace("__SEARCH__", &quote(s.search_template()))
+        .replace("__TOP__", &format!("[{}]", tiles.join(",")))
+}
+
+/// The new tab page for the current settings and history. Private windows show no tiles.
+fn newtab_page(app: &Sh) -> String {
+    let Ok(a) = app.try_borrow() else { return newtab_html(&Settings::default(), &[]) };
+    let top = if private() { vec![] } else { suggest::top_sites(&a.history, &a.marks, 8, suggest::now()) };
+    newtab_html(&a.settings, &top)
 }
 
 fn settings_html(s: &Settings) -> String {
@@ -572,7 +582,7 @@ fn select_tab(app: &Sh, id: u32) {
 fn load_home(app: &Sh, wv: &webkit2gtk::WebView) {
     let Ok(s) = app.try_borrow().map(|a| a.settings.clone()) else { return };
     if s.home.trim().is_empty() {
-        wv.load_html(&newtab_html(&s), None);
+        wv.load_html(&newtab_page(app), None);
     } else if let Some(p) = internal(&s.home) {
         load_internal(app, wv, p);
     } else {
@@ -711,8 +721,7 @@ fn run(app: &Sh, c: Cmd) {
 }
 
 fn load_home_newtab(app: &Sh, wv: &webkit2gtk::WebView) {
-    let Ok(s) = app.try_borrow().map(|a| a.settings.clone()) else { return };
-    wv.load_html(&newtab_html(&s), None);
+    wv.load_html(&newtab_page(app), None);
 }
 
 fn go(app: &Sh, input: &str) {
@@ -1197,7 +1206,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     b = match &url {
         Some(_) if is_internal => b,
         Some(u) => b.with_url(u),
-        None => b.with_html(newtab_html(&s)),
+        None => b.with_html(newtab_page(app)),
     };
     let view = b.build_gtk(&page).expect("webview");
     drop(ctx);
@@ -1881,8 +1890,10 @@ mod tests {
     #[test]
     fn newtab_uses_chosen_engine() {
         let s = Settings { engine: "Google".into(), ..Default::default() };
-        let html = newtab_html(&s);
-        assert!(!html.contains("__SEARCH__;"));
+        let html = newtab_html(&s, &[("https://a.example/".into(), "A \"quoted\" </script>".into())]);
+        assert!(!html.contains("__SEARCH__;") && !html.contains("__TOP__"));
+        // a page title can't break out of the script
+        assert!(html.contains(r#"[["https://a.example/","A \"quoted\" \u003c/script>"]]"#), "{html}");
         assert!(html.contains(r#"const template = "https://www.google.com/search?q=%s";"#));
     }
 

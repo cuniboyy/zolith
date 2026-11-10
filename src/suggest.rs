@@ -156,6 +156,30 @@ fn bare(url: &str) -> &str {
     u.strip_prefix("www.").unwrap_or(u)
 }
 
+/// The sites to show on the new tab page: the best-ranked page of each site, `n` at most.
+/// Bookmarked sites get a small boost so pages you saved are never crowded out.
+pub fn top_sites(history: &[Visit], marks: &[(String, String)], n: usize, now: u64) -> Vec<(String, String)> {
+    let host = |u: &str| bare(u).split('/').next().unwrap_or("").to_ascii_lowercase();
+    let mut best: Vec<(i64, String, String)> = vec![]; // (score, url, title)
+    let mut consider = |score: i64, url: &str, title: &str| {
+        let h = host(url);
+        match best.iter_mut().find(|(_, u, _)| host(u) == h) {
+            // keep the front page of a site over one of its inner pages when scores are close
+            Some(e) if score > e.0 => *e = (score, url.to_string(), title.to_string()),
+            Some(_) => {}
+            None => best.push((score, url.to_string(), title.to_string())),
+        }
+    };
+    for e in history.iter().filter(|e| recordable(&e.url)) {
+        consider(score(e, now), &e.url, &e.title);
+    }
+    for (url, title) in marks.iter().filter(|(u, _)| recordable(u)) {
+        consider(30, url, title);
+    }
+    best.sort_by_key(|(sc, _, _)| std::cmp::Reverse(*sc));
+    best.into_iter().take(n).map(|(_, u, t)| (u, t)).collect()
+}
+
 /// History and bookmarks matching what was typed, best first. Every word typed must appear
 /// in the page's title or address.
 pub fn find(history: &[Visit], marks: &[(String, String)], typed: &str, now: u64, limit: usize) -> Vec<Row> {
@@ -381,6 +405,24 @@ mod tests {
         for _ in 0..30 { record(&mut h, "https://popular.example/", "", 1000); }
         assert!(h.len() <= MAX_HISTORY);
         assert!(h.iter().any(|e| e.url == "https://popular.example/"));
+    }
+
+    #[test]
+    fn top_sites_are_one_per_site_best_first() {
+        let now = 100 * DAY;
+        let hist = vec![
+            v("https://www.youtube.com/watch?v=1", "A video", 5, now - 60),
+            v("https://www.youtube.com/", "YouTube", 60, now - 60),
+            v("https://github.com/", "GitHub", 20, now - DAY),
+            v("https://rare.example/", "Rare", 1, now - 90 * DAY),
+            v("https://duckduckgo.com/?q=x", "search page", 99, now),
+        ];
+        let marks = vec![("https://docs.rs/".to_string(), "Docs.rs".to_string()), ("zolith://settings/".to_string(), "S".to_string())];
+        let top = top_sites(&hist, &marks, 3, now);
+        assert_eq!(top.iter().map(|t| t.1.as_str()).collect::<Vec<_>>(), ["YouTube", "GitHub", "Docs.rs"]);
+        // YouTube once, GitHub, Rare, Docs.rs: no search page, no internal page
+        assert_eq!(top_sites(&hist, &marks, 10, now).len(), 4);
+        assert!(top_sites(&[], &[], 8, now).is_empty());
     }
 
     #[test]
