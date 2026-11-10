@@ -2632,5 +2632,6 @@ version = "0.1.0"
 dependencies = [
  "gtk",
  "tao",
+ "webkit2gtk",
  "wry",
 ]

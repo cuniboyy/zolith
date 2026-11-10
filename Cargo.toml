@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 gtk = "0.18"
 tao = "0.37.2"
+webkit2gtk = { version = "2.0.2", features = ["v2_40"] }
 wry = { version = "0.57.2", features = ["devtools"] }
