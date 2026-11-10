@@ -1,0 +1,46 @@
+/* Firefox "Proton" dark palette */
+.titlebar-box { background: #1c1b22; padding: 4px 6px 0 6px; }
+.tab {
+  background: transparent; color: #cfcfd8; border-radius: 6px;
+  padding: 0 4px 0 12px; margin: 2px 1px 6px 1px; min-height: 32px;
+}
+.tab:hover { background: rgba(251,251,254,0.1); }
+.tab.selected { background: #42414d; color: #fbfbfe; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+.tab label { color: inherit; font-size: 13px; }
+.tab-close, .newtab-btn, .winbtn {
+  background: transparent; border: none; box-shadow: none; border-radius: 4px;
+  padding: 0; min-width: 24px; min-height: 24px; color: #fbfbfe;
+}
+.tab-close:hover, .newtab-btn:hover, .winbtn:hover { background: rgba(251,251,254,0.18); }
+.newtab-btn { margin: 0 4px 4px 4px; min-height: 28px; min-width: 28px; }
+.winbtn { min-width: 36px; min-height: 28px; border-radius: 4px; margin: 0 1px 4px 1px; }
+
+.toolbar { background: #2b2a33; padding: 6px 8px; border-bottom: 1px solid #0c0c0d; }
+.toolbar button {
+  background: transparent; border: none; box-shadow: none; border-radius: 4px;
+  min-width: 32px; min-height: 32px; padding: 0; color: #fbfbfe;
+}
+.toolbar button:hover { background: rgba(251,251,254,0.1); }
+.toolbar button:active { background: rgba(251,251,254,0.18); }
+.urlbar {
+  background-color: #1c1b22; background-image: none; color: #fbfbfe;
+  border: 2px solid transparent; border-radius: 6px; box-shadow: none;
+  min-height: 32px; padding: 0 10px; font-size: 14px;
+  caret-color: #fbfbfe;
+}
+.urlbar:hover { background-color: #52525e; }
+.urlbar:focus { background-color: #1c1b22; border-color: #00ddff; }
+.urlbar selection { background: #0061e0; color: #fbfbfe; }
+.urlbar image { color: #cfcfd8; }
+
+.bookmarks { background: #2b2a33; border-bottom: 1px solid #0c0c0d; padding: 2px 8px; }
+.bookmarks button {
+  background: transparent; border: none; box-shadow: none; border-radius: 4px;
+  min-height: 24px; padding: 0 8px; font-size: 12px; color: #fbfbfe;
+}
+.bookmarks button:hover { background: rgba(251,251,254,0.1); }
+
+.findbar { background: #2b2a33; border-top: 1px solid #0c0c0d; padding: 4px 8px; }
+.findbar entry { background-color: #1c1b22; background-image: none; color: #fbfbfe; border: 1px solid #52525e; }
+.findbar button { background: transparent; border: none; box-shadow: none; min-width: 28px; min-height: 28px; padding: 0; color: #fbfbfe; }
+.findbar button:hover { background: rgba(251,251,254,0.1); }

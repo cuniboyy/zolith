@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>New Tab</title>
+<style>
+  html, body { height: 100%; margin: 0 }
+  body {
+    font: 15px system-ui, sans-serif; background: #f9f9fb; color: #15141a;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px;
+  }
+  h1 { font-weight: 300; font-size: 36px; margin: 0 }
+  form { width: min(640px, 86vw) }
+  input {
+    width: 100%; box-sizing: border-box; font: inherit; padding: 14px 18px;
+    border: 2px solid transparent; border-radius: 8px; background: #fff; color: inherit;
+    box-shadow: 0 1px 4px rgba(58, 57, 68, .25); outline: none;
+  }
+  input:focus { border-color: #0061e0 }
+  :root { color-scheme: dark }
+  body { background: #1c1b22; color: #fbfbfe }
+  input { background: #2b2a33; box-shadow: 0 1px 4px rgba(0, 0, 0, .5) }
+  input:focus { border-color: #00ddff }
+</style>
+<h1>Search the web</h1>
+<form action="https://duckduckgo.com/">
+  <input name="q" placeholder="Search with DuckDuckGo or enter address" autofocus autocomplete="off">
+</form>

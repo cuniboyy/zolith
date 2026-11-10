@@ -1,0 +1,9 @@
+[package]
+name = "winty"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gtk = "0.18"
+tao = "0.37.2"
+wry = { version = "0.57.2", features = ["devtools"] }
