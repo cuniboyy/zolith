@@ -388,6 +388,10 @@ impl App {
             else if t.url.is_empty() { Some("system-search-symbolic") }
             else if let Some(p) = internal(&t.url) { Some(p.icon()) } else { None };
         self.entry.set_icon_from_icon_name(gtk::EntryIconPosition::Primary, icon);
+        self.entry.set_icon_tooltip_text(
+            gtk::EntryIconPosition::Primary,
+            t.url.starts_with("http").then_some("Site information and permissions"),
+        );
         let p = t.wv.estimated_load_progress();
         self.entry.set_progress_fraction(if t.loading && p < 1.0 { p.max(0.1) } else { 0.0 });
         self.back.set_sensitive(t.wv.can_go_back());
@@ -1707,6 +1711,14 @@ fn main() {
         sug_list.connect_row_activated(move |_, row| {
             let url = a.try_borrow().ok().and_then(|x| x.sug_rows.get(row.index() as usize).map(|r| r.url.clone()));
             if let Some(u) = url { go(&a, &u) }
+        });
+    }
+    {
+        // the lock icon opens the site panel
+        entry.set_icon_activatable(gtk::EntryIconPosition::Primary, true);
+        let a = app.clone();
+        entry.connect_icon_press(move |e, pos, _| {
+            if pos == gtk::EntryIconPosition::Primary { permissions::site_panel(&a, e) }
         });
     }
     { let a = app.clone(); find_entry.connect_activate(move |_| run(&a, Cmd::FindNext(false))); }

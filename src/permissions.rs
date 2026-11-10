@@ -257,6 +257,86 @@ fn ask(app: &Sh, req: PermissionRequest, site: String, items: Vec<(&'static str,
     bubble.show_all();
 }
 
+/// Everything a page can ask for, in the order shown in the site panel.
+const ALL: [(&str, &str); 5] = [
+    ("microphone", "Microphone"),
+    ("camera", "Camera"),
+    ("screen", "Screen sharing"),
+    ("location", "Location"),
+    ("notifications", "Notifications"),
+];
+
+/// The panel behind the lock icon: whether the connection is secure, and this site's
+/// permissions, each one Ask / Allow / Block.
+pub fn site_panel(app: &Sh, entry: &gtk::Entry) {
+    let Some((url, perms)) = app.try_borrow().ok().and_then(|a| a.cur_tab().map(|t| (t.url.clone(), a.perms.clone()))) else { return };
+    let Some(site) = site_of(&url) else { return };
+
+    let pop = gtk::Popover::new(Some(entry));
+    pop.set_pointing_to(&entry.icon_area(gtk::EntryIconPosition::Primary));
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    body.set_border_width(14);
+    body.set_size_request(300, -1);
+    let name = gtk::Label::new(Some(&site));
+    name.set_xalign(0.0);
+    name.style_context().add_class("perm-title");
+    body.pack_start(&name, false, false, 0);
+    let secure = url.starts_with("https://");
+    let conn = gtk::Label::new(Some(if secure { "Connection is secure" } else { "Connection is not secure" }));
+    conn.set_xalign(0.0);
+    conn.style_context().add_class("dim-label");
+    body.pack_start(&conn, false, false, 0);
+    body.pack_start(&gtk::Separator::new(gtk::Orientation::Horizontal), false, false, 4);
+    let head = gtk::Label::new(Some("Permissions"));
+    head.set_xalign(0.0);
+    body.pack_start(&head, false, false, 0);
+
+    for (key, label) in ALL {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.pack_start(&gtk::Image::from_icon_name(Some(icon(key)), gtk::IconSize::Menu), false, false, 0);
+        let l = gtk::Label::new(Some(label));
+        l.set_xalign(0.0);
+        row.pack_start(&l, true, true, 0);
+        let combo = gtk::ComboBoxText::new();
+        for (id, text) in [("ask", "Ask"), ("allow", "Allow"), ("block", "Block")] {
+            combo.append(Some(id), text);
+        }
+        combo.set_active_id(Some(match perms.get(&(site.clone(), key.to_string())) {
+            Some(true) => "allow",
+            Some(false) => "block",
+            None => "ask",
+        }));
+        let (app, site, key) = (app.clone(), site.clone(), key.to_string());
+        combo.connect_changed(move |c| {
+            let answer = match c.active_id().as_deref() {
+                Some("allow") => Some(true),
+                Some("block") => Some(false),
+                _ => None,
+            };
+            with(&app, |a| {
+                match answer {
+                    Some(v) => { a.perms.insert((site.clone(), key.clone()), v); }
+                    None => { a.perms.remove(&(site.clone(), key.clone())); }
+                }
+                if !private() {
+                    save(&a.perms);
+                }
+            });
+        });
+        row.pack_start(&combo, false, false, 0);
+        body.pack_start(&row, false, false, 0);
+    }
+    let note = gtk::Label::new(Some("Changes apply the next time the page asks. Reload the page to be sure."));
+    note.set_xalign(0.0);
+    note.set_line_wrap(true);
+    note.set_max_width_chars(36);
+    note.style_context().add_class("dim-label");
+    body.pack_start(&note, false, false, 4);
+    body.show_all();
+    pop.add(&body);
+    pop.popup();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
