@@ -46,9 +46,16 @@ fn path() -> PathBuf {
     settings::config_dir().join("history.tsv")
 }
 
-/// Pages worth remembering: real websites only, never our own pages.
+/// A results page of one of the built-in search engines (e.g. `duckduckgo.com/?q=...`).
+pub fn is_search_page(url: &str) -> bool {
+    let (base, query) = url.split_once('?').unwrap_or((url, ""));
+    !query.is_empty()
+        && settings::ENGINES.iter().any(|e| e.1.split('?').next() == Some(base))
+}
+
+/// Pages worth remembering: real websites only, never our own pages or search results.
 pub fn recordable(url: &str) -> bool {
-    url.starts_with("http://") || url.starts_with("https://")
+    (url.starts_with("http://") || url.starts_with("https://")) && !is_search_page(url)
 }
 
 fn clean(s: &str) -> String {
@@ -178,6 +185,47 @@ pub fn find(history: &[Visit], marks: &[(String, String)], typed: &str, now: u64
     }
     cands.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
     cands.into_iter().take(limit).map(|(_, r)| r).collect()
+}
+
+/// The site to complete in the address bar: the best-ranked bookmark or visited page whose
+/// address starts with what was typed. Returns the full text to show (`youtube.com/`) and the
+/// row for it. Words with spaces never complete.
+pub fn best_site(history: &[Visit], marks: &[(String, String)], typed: &str, now: u64) -> Option<(String, Row)> {
+    let t = typed.to_lowercase();
+    if t.is_empty() || t.contains(char::is_whitespace) || t.starts_with(['/', '.']) || t.ends_with('/') {
+        return None;
+    }
+    let t = t.strip_prefix("https://").or_else(|| t.strip_prefix("http://")).unwrap_or(&t).to_string();
+    let t = t.strip_prefix("www.").unwrap_or(&t).to_string();
+    let all = history.iter().map(|e| (e.url.as_str(), e.title.as_str(), score(e, now)))
+        .chain(marks.iter().map(|(u, ti)| (u.as_str(), ti.as_str(), 35)));
+    let (url, _, _) = all.filter(|(u, _, _)| bare(u).to_lowercase().starts_with(&t)).max_by_key(|x| x.2)?;
+    let host = bare(url).split('/').next().unwrap_or("");
+    let completion = if t.contains('/') {
+        // already typing a path: complete that page's address
+        bare(url).to_string()
+    } else {
+        format!("{host}/")
+    };
+    if completion.len() <= t.len() || !completion.to_lowercase().starts_with(&t) {
+        return None;
+    }
+    // keep the site's real address (it may need its "www.")
+    let origin: String = url.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
+    let target = if t.contains('/') { url.to_string() } else { format!("{origin}/") };
+    // the site's own title, if we have its front page
+    let front = |u: &str| u.trim_end_matches('/') == origin;
+    let title = history.iter().map(|e| (e.url.as_str(), e.title.as_str()))
+        .chain(marks.iter().map(|(u, ti)| (u.as_str(), ti.as_str())))
+        .find(|(u, ti)| front(u) && !ti.is_empty()).map(|(_, ti)| ti.to_string());
+    let bookmarked = marks.iter().any(|(u, _)| *u == target);
+    let row = Row {
+        kind: if bookmarked { Kind::Bookmark } else { Kind::History },
+        text: if t.contains('/') { title.unwrap_or_else(|| bare(url).to_string()) } else { title.unwrap_or_else(|| host.to_string()) },
+        detail: bare(&target).trim_end_matches('/').to_string(),
+        url: target,
+    };
+    Some((completion, row))
 }
 
 /// Read an OpenSearch suggestion reply, `["typed",["one","two"],...]`, into its suggestions:
@@ -330,6 +378,44 @@ mod tests {
         assert_eq!(h[0].url, "https://old.example/");
         clear(&mut h, 0, now);
         assert!(h.is_empty());
+    }
+
+    #[test]
+    fn search_pages_are_not_sites() {
+        assert!(is_search_page("https://duckduckgo.com/?q=youtube&ia=web"));
+        assert!(is_search_page("https://www.google.com/search?q=x"));
+        assert!(!is_search_page("https://duckduckgo.com/"));
+        assert!(!is_search_page("https://duckduckgo.com.evil.example/?q=x"));
+        assert!(!is_search_page("https://example.com/search?q=x"));
+        assert!(!recordable("https://duckduckgo.com/?q=youtube"));
+        // already-saved search pages disappear when history is loaded
+        assert!(parse("5\t2\thttps://duckduckgo.com/?q=a\tA\n").is_empty());
+    }
+
+    #[test]
+    fn completes_sites() {
+        let now = 100 * DAY;
+        let hist = vec![
+            v("https://www.youtube.com/watch?v=1", "A video - YouTube", 40, now - 60),
+            v("https://www.youtube.com/", "YouTube", 30, now - 60),
+            v("https://yourbank.example/login", "Bank", 2, now - 10 * DAY),
+            v("http://localhost:3000/app", "Dev app", 5, now - 5),
+        ];
+        let marks = vec![("https://docs.rs/".to_string(), "Docs.rs".to_string())];
+        let (c, row) = best_site(&hist, &marks, "you", now).unwrap();
+        assert_eq!(c, "youtube.com/");
+        assert_eq!((row.url.as_str(), row.text.as_str(), row.detail.as_str()), ("https://www.youtube.com/", "YouTube", "youtube.com"));
+        assert_eq!(best_site(&hist, &marks, "YOU", now).unwrap().0, "youtube.com/");
+        assert_eq!(best_site(&hist, &marks, "www.you", now).unwrap().0, "youtube.com/");
+        assert_eq!(best_site(&hist, &marks, "https://you", now).unwrap().0, "youtube.com/");
+        assert_eq!(best_site(&hist, &marks, "youtube.com/wa", now).unwrap().0, "youtube.com/watch?v=1");
+        assert_eq!(best_site(&hist, &marks, "yourb", now).unwrap().0, "yourbank.example/");
+        assert_eq!(best_site(&hist, &marks, "local", now).unwrap().0, "localhost:3000/");
+        assert_eq!(best_site(&hist, &marks, "docs", now).unwrap().1.kind, Kind::Bookmark);
+        // nothing to add, no match, spaces, junk
+        for t in ["youtube.com/", "zzz", "you tube", "", " ", "/you", ".com", "tube"] {
+            assert!(best_site(&hist, &marks, t, now).is_none(), "{t:?}");
+        }
     }
 
     #[test]

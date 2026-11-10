@@ -98,12 +98,18 @@ struct App {
     status: gtk::Label,
     ctx: Rc<RefCell<WebContext>>,
     history: Vec<Visit>,
-    /// Address bar dropdown.
-    sug_pop: gtk::Popover,
+    /// Address bar dropdown: a panel drawn over the page (a popover would swallow editing keys).
+    sug_pop: gtk::Box,
+    /// The overlay the dropdown is placed in, for positioning it under the address bar.
+    top: gtk::Overlay,
     sug_list: gtk::ListBox,
     sug_rows: Vec<Row>,
     /// Bumped on every keystroke so slow suggestion replies for old text are ignored.
     sug_seq: u32,
+    /// What the user had typed before the last keystroke (without any completion we added).
+    last_typed: String,
+    /// Whether the current keystroke may inline-complete (not after deleting).
+    inline_ok: bool,
     http: soup::Session,
 }
 
@@ -578,13 +584,18 @@ fn hide_suggestions(app: &Sh) {
 fn suggest_typed(app: &Sh, typed: &str) {
     let text = typed.trim().to_string();
     if text.is_empty() {
+        with(app, |a| a.last_typed.clear());
         return hide_suggestions(app);
     }
     let Ok(mut a) = app.try_borrow_mut() else { return };
     a.sug_seq += 1;
+    // deleting (Backspace/Delete, or removing the completion) must never re-complete
+    let deleted = a.last_typed.len() >= typed.len() && a.last_typed.starts_with(typed);
+    a.inline_ok = !deleted;
+    a.last_typed = typed.to_string();
     let (seq, engine, ask) = (a.sug_seq, a.settings.engine.clone(), a.settings.suggest && !is_address(&text));
     drop(a);
-    suggest_render(app, &text, &[]);
+    suggest_render(app, &text, &[], true);
     if ask && settings::suggest_template(&engine).is_some() {
         let app = app.clone();
         // wait for a pause in typing so one query goes out per word, not per key
@@ -597,7 +608,7 @@ fn suggest_typed(app: &Sh, typed: &str) {
             let text2 = text.clone();
             suggest::fetch(&http, &engine, &text, move |list| {
                 let current = app2.try_borrow().map(|a| a.sug_seq == seq && a.entry.has_focus()).unwrap_or(false);
-                if current && !list.is_empty() { suggest_render(&app2, &text2, &list) }
+                if current && !list.is_empty() { suggest_render(&app2, &text2, &list, false) }
             });
         });
     }
@@ -605,22 +616,48 @@ fn suggest_typed(app: &Sh, typed: &str) {
 
 /// Build and show the dropdown: the typed text first, then bookmarks/history, then the
 /// search engine's suggestions.
-fn suggest_render(app: &Sh, text: &str, online: &[String]) {
+fn suggest_render(app: &Sh, text: &str, online: &[String], complete: bool) {
     let Ok(mut a) = app.try_borrow_mut() else { return };
     if !a.entry.has_focus() {
         return;
     }
     let template = a.settings.search_template().to_string();
-    let mut rows = vec![if is_address(text) {
+    let typed_row = if is_address(text) {
         Row { kind: Kind::Go, text: text.into(), detail: String::new(), url: text.into() }
     } else {
         Row {
             kind: Kind::Search, text: text.into(), detail: format!("Search with {}", a.settings.engine),
             url: to_url(text, &template),
         }
-    }];
+    };
+    // a site you visit often: complete it in the bar and put it first, so Enter goes straight there
+    let site = if a.inline_ok { suggest::best_site(&a.history, &a.marks, text, suggest::now()) } else { None };
+    let mut rows = vec![];
+    match site {
+        Some((completion, row)) => {
+            if complete {
+                // text is the user's own prefix; show the rest selected so typing on replaces it.
+                // Done once this keystroke has finished: GTK resets the selection right after
+                // the "changed" signal returns, which would also garble fast typing.
+                let n = text.chars().count() as i32;
+                let shown = format!("{text}{}", completion.chars().skip(n as usize).collect::<String>());
+                let (seq, typed_now, app2) = (a.sug_seq, text.to_string(), app.clone());
+                glib::idle_add_local_once(move || {
+                    // holding the borrow also keeps our own "changed" handler from re-entering
+                    let Ok(a) = app2.try_borrow_mut() else { return };
+                    if a.sug_seq == seq && a.entry.has_focus() && a.entry.text().as_str() == typed_now {
+                        a.entry.set_text(&shown);
+                        a.entry.select_region(n, -1);
+                    }
+                });
+            }
+            rows.push(row);
+            rows.push(typed_row);
+        }
+        None => rows.push(typed_row),
+    }
     for r in suggest::find(&a.history, &a.marks, text, suggest::now(), 5) {
-        if r.url != rows[0].url { rows.push(r) }
+        if !rows.iter().any(|x| x.url == r.url) { rows.push(r) }
     }
     let typed = text.to_lowercase();
     for s in online.iter().filter(|s| s.to_lowercase() != typed).take(5) {
@@ -648,9 +685,13 @@ fn suggest_render(app: &Sh, text: &str, online: &[String]) {
     }
     a.sug_list.show_all();
     a.sug_rows = rows;
+    // sit right under the address bar, as wide as it is
+    let (x, y) = a.entry.translate_coordinates(&a.top, 0, 0).unwrap_or((0, 0));
+    a.sug_pop.set_margin_start(x.max(0));
+    a.sug_pop.set_margin_top((y + a.entry.allocated_height() + 2).max(0));
     a.sug_list.set_size_request(a.entry.allocated_width(), -1);
     a.sug_list.select_row(a.sug_list.row_at_index(0).as_ref());
-    a.sug_pop.popup();
+    a.sug_pop.show();
 }
 
 /// Up/Down in the address bar move through the dropdown.
@@ -1088,12 +1129,13 @@ fn main() {
     sug_list.set_can_focus(false);
     sug_list.set_selection_mode(gtk::SelectionMode::Single);
     sug_list.set_activate_on_single_click(true);
-    let sug_pop = gtk::Popover::new(Some(&entry));
-    // non-modal: the address bar keeps keyboard focus while the list is open
-    sug_pop.set_modal(false);
-    sug_pop.set_position(gtk::PositionType::Bottom);
+    let sug_pop = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    sug_pop.set_halign(gtk::Align::Start);
+    sug_pop.set_valign(gtk::Align::Start);
     sug_pop.style_context().add_class("suggestpop");
     sug_pop.add(&sug_list);
+    sug_list.show();
+    sug_pop.set_no_show_all(true);
     sug_list.style_context().add_class("suggest");
     let menu_btn = gtk::MenuButton::new();
     menu_btn.add(&gtk::Image::from_icon_name(Some("open-menu-symbolic"), gtk::IconSize::Menu));
@@ -1139,10 +1181,16 @@ fn main() {
     find_bar.set_no_show_all(true);
 
     let vbox = window.default_vbox().expect("vbox");
-    vbox.pack_start(&toolbar, false, false, 0);
-    vbox.pack_start(&bm_bar, false, false, 0);
-    vbox.pack_start(&overlay, true, true, 0);
-    vbox.pack_start(&find_bar, false, false, 0);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.pack_start(&toolbar, false, false, 0);
+    content.pack_start(&bm_bar, false, false, 0);
+    content.pack_start(&overlay, true, true, 0);
+    content.pack_start(&find_bar, false, false, 0);
+    // the address-bar dropdown floats over everything below the toolbar
+    let top = gtk::Overlay::new();
+    top.add(&content);
+    top.add_overlay(&sug_pop);
+    vbox.pack_start(&top, true, true, 0);
 
     // ---- titlebar: scrollable tab strip + window controls ----
     let tabs_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -1218,7 +1266,8 @@ fn main() {
         entry: entry.clone(), back: back.clone(), fwd: fwd.clone(), home_btn: home.clone(), reload_img, star_img,
         bm_bar, find_bar, find_entry: find_entry.clone(), status,
         ctx: Rc::new(RefCell::new(WebContext::new(Some(settings::data_dir())))),
-        history: suggest::load(), sug_pop, sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
+        history: suggest::load(), sug_pop, top: top.clone(), sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
+        last_typed: String::new(), inline_ok: false,
         http: suggest::new_session(),
     }));
 
