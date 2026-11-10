@@ -84,3 +84,7 @@ box.permbubble { background: #292a2d; border: 1px solid #0c0c0d; border-radius: 
   border: 1px solid #5f6368; box-shadow: none; color: #8ab4f8; font-weight: 500; }
 .perm-btn:hover { background: rgba(138,180,248,0.1); }
 .perm-btn:disabled { opacity: 0.5; }
+
+/* a tab that was put to sleep to save memory */
+.tab.asleep label { opacity: 0.55; font-style: italic; }
+.tab.asleep image { opacity: 0.55; }

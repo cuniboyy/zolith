@@ -41,6 +41,8 @@ pub struct Settings {
     pub community: bool,
     /// Ask the search engine for suggestions while typing (sends what you type to it).
     pub suggest: bool,
+    /// Put tabs you haven't used for a while to sleep, to free their memory.
+    pub sleep_tabs: bool,
     /// One of `STARTUPS`.
     pub startup: String,
     /// Opened at startup when `startup` is "page".
@@ -59,7 +61,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             engine: ENGINES[0].0.into(), custom: String::new(), home: String::new(),
-            show_home: true, show_bookmarks: true, adblock: true, community: true, suggest: true,
+            show_home: true, show_bookmarks: true, adblock: true, community: false, suggest: true, sleep_tabs: true,
             startup: STARTUPS[0].into(), startup_page: String::new(), zoom: 100, download_dir: String::new(),
             theme: THEMES[0].0.into(), welcome_done: false,
         }
@@ -92,12 +94,13 @@ impl Settings {
             "zoom" => match v.parse() { Ok(z) if ZOOMS.contains(&z) => self.zoom = z, _ => return false },
             "download_dir" if v.is_empty() || v.starts_with('/') => self.download_dir = v.into(),
             "theme" if THEMES.iter().any(|t| t.0 == v) => self.theme = v.into(),
-            "show_home" | "show_bookmarks" | "adblock" | "community" | "suggest" | "welcome_done" => {
+            "show_home" | "show_bookmarks" | "adblock" | "community" | "suggest" | "sleep_tabs" | "welcome_done" => {
                 let Some(b) = flag(v) else { return false };
                 match key {
                     "show_home" => self.show_home = b,
                     "show_bookmarks" => self.show_bookmarks = b,
                     "suggest" => self.suggest = b,
+                    "sleep_tabs" => self.sleep_tabs = b,
                     "community" => self.community = b,
                     "welcome_done" => self.welcome_done = b,
                     _ => self.adblock = b,
@@ -136,7 +139,7 @@ impl Settings {
         vec![
             ("engine", self.engine.clone()), ("custom", self.custom.clone()), ("home", self.home.clone()),
             ("show_home", self.show_home.to_string()), ("show_bookmarks", self.show_bookmarks.to_string()),
-            ("adblock", self.adblock.to_string()), ("community", self.community.to_string()), ("suggest", self.suggest.to_string()),
+            ("adblock", self.adblock.to_string()), ("community", self.community.to_string()), ("suggest", self.suggest.to_string()), ("sleep_tabs", self.sleep_tabs.to_string()),
             ("startup", self.startup.clone()),
             ("startup_page", self.startup_page.clone()), ("zoom", self.zoom.to_string()),
             ("download_dir", self.download_dir.clone()), ("theme", self.theme.clone()),

@@ -25,6 +25,7 @@ No Electron, no Chromium: just GTK and your system's WebKit.
 - Site icons, a loading spinner, middle-click to close, reopen closed tabs, `Ctrl+1`–`9` to jump
 - Pinned tabs, drag to reorder, and a right-click tab menu (duplicate, close others, close to the right)
 - Session restore: pick up where you left off
+- Memory saver: tabs you haven't used for 15 minutes are put to sleep and reload when you click them (in a test with four tabs open, three asleep, total memory fell by about 45%). Switch it off in Settings.
 
 **Address bar**
 - Type the start of a site you visit and it completes inline: `you` becomes `youtube.com/`, and Enter goes straight there

@@ -213,6 +213,10 @@
           <select id="theme"></select>
         </div>
         <div class="row">
+          <div class="label">Free memory from inactive tabs<div class="secondary">Tabs you haven't used for 15 minutes are put to sleep and reload when you click them. Tabs playing sound are never put to sleep.</div></div>
+          <label class="toggle"><input type="checkbox" id="sleep_tabs" aria-label="Free memory from inactive tabs"><span class="bar"></span><span class="knob"></span></label>
+        </div>
+        <div class="row">
           <div class="label">Show bookmarks bar</div>
           <label class="toggle"><input type="checkbox" id="show_bookmarks" aria-label="Show bookmarks bar"><span class="bar"></span><span class="knob"></span></label>
         </div>
@@ -390,6 +394,8 @@
   for (const [id, name] of [['default', 'Zolith'], ['opera', 'Opera red'], ['ocean', 'Ocean'], ['violet', 'Violet']]) $('theme').add(new Option(name, id));
   $('theme').value = S.theme;
   $('theme').onchange = () => set('theme', $('theme').value);
+  $('sleep_tabs').checked = S.sleep_tabs === 'true';
+  $('sleep_tabs').onchange = () => set('sleep_tabs', $('sleep_tabs').checked);
   $('show_bookmarks').checked = S.show_bookmarks === 'true';
   $('show_bookmarks').onchange = () => set('show_bookmarks', $('show_bookmarks').checked);
   for (const z of ZOOMS) $('zoom').add(new Option(z + '%', z));

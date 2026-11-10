@@ -94,6 +94,10 @@ struct Tab {
     url: String,
     title: String,
     loading: bool,
+    /// When the tab was last in front, for putting unused tabs to sleep.
+    last_active: std::time::Instant,
+    /// Set while the tab is asleep: its web process has been stopped (freeing the memory) and this is the page to reload.
+    asleep: Option<String>,
 }
 
 struct App {
@@ -439,6 +443,9 @@ impl App {
             return;
         }
         self.cur = id;
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
+            t.last_active = std::time::Instant::now();
+        }
         self.stack.set_visible_child_name(&id.to_string());
         for t in &self.tabs {
             let ctx = t.head.style_context();
@@ -506,6 +513,10 @@ impl App {
     /// A tab's page changed (address, load state or progress).
     fn tab_changed(&mut self, id: u32, loading: Option<bool>) {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else { return };
+        // a sleeping tab's page is gone on purpose: keep its address and title as they are
+        if t.asleep.is_some() {
+            return;
+        }
         let old_url = t.url.clone();
         if let Some(u) = t.wv.uri() {
             t.url = if u.starts_with("about:") { String::new() } else { u.to_string() };
@@ -535,6 +546,10 @@ impl App {
 
     fn set_title(&mut self, id: u32, title: &str) {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else { return };
+        // stopping a sleeping tab's process reports an empty title: keep the one it had
+        if t.asleep.is_some() && title.is_empty() {
+            return;
+        }
         t.title = title.to_string();
         let shown = if title.is_empty() { if t.url.is_empty() { "New Tab" } else { &t.url } } else { title };
         t.label.set_text(shown);
@@ -595,7 +610,57 @@ fn focus_current(app: &Sh) {
 
 fn select_tab(app: &Sh, id: u32) {
     with(app, |a| a.select(id));
+    wake_current(app);
     focus_current(app);
+}
+
+/// How long a tab must go unused before it is put to sleep. `ZOLITH_SLEEP_SECS` is for testing.
+fn sleep_after() -> std::time::Duration {
+    let secs = std::env::var("ZOLITH_SLEEP_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(15 * 60);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Unload tabs nobody has used for a while. Their address and title stay; clicking one reloads it.
+/// Never the tab in front, pinned tabs, ones loading, playing sound or on a page of ours.
+fn sleep_idle_tabs(app: &Sh) {
+    let idle = sleep_after();
+    let victims: Vec<(webkit2gtk::WebView, String)> = {
+        let Ok(mut a) = app.try_borrow_mut() else { return };
+        if !a.settings.sleep_tabs {
+            return;
+        }
+        let cur = a.cur;
+        a.tabs.iter_mut()
+            .filter(|t| t.id != cur && !t.pinned && !t.loading && t.asleep.is_none()
+                && (t.url.starts_with("http://") || t.url.starts_with("https://"))
+                && t.last_active.elapsed() >= idle && !t.wv.is_playing_audio())
+            .map(|t| {
+                // marked first, so what stopping the process sets off is not mistaken for the user's doing
+                t.asleep = Some(t.url.clone());
+                t.head.style_context().add_class("asleep");
+                (t.wv.clone(), t.url.clone())
+            })
+            .collect()
+    };
+    for (wv, _) in victims {
+        // quitting the tab's web process is what frees its memory; the tab keeps its address,
+        // title and history, and reloading brings it back
+        wv.terminate_web_process();
+    }
+}
+
+/// If the tab in front is asleep, bring its page back.
+fn wake_current(app: &Sh) {
+    let wake = app.try_borrow_mut().ok().and_then(|mut a| {
+        let cur = a.cur;
+        a.tabs.iter_mut().find(|t| t.id == cur).and_then(|t| {
+            t.head.style_context().remove_class("asleep");
+            t.asleep.take().map(|url| (t.wv.clone(), url))
+        })
+    });
+    if let Some((wv, url)) = wake {
+        wv.load_uri(&url);
+    }
 }
 
 fn load_home(app: &Sh, wv: &webkit2gtk::WebView) {
@@ -1187,6 +1252,7 @@ fn close_tab(app: &Sh, id: u32) {
     // destroy the webview only after the App borrow is released
     drop(closed);
     schedule_layout(app);
+    wake_current(app);
     focus_current(app);
 }
 
@@ -1267,7 +1333,11 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     {
         let a = app.clone();
         permissions::hook(app, &wv);
-        if let Some(c) = wv.context() { c.set_spell_checking_enabled(true) }
+        if let Some(c) = wv.context() {
+            c.set_spell_checking_enabled(true);
+            // smaller in-memory caches than the default "web browser" model
+            c.set_cache_model(webkit2gtk::CacheModel::DocumentBrowser);
+        }
         wv.connect_context_menu(move |wv, _menu, event, hit| { menus::page_menu(&a, wv, hit, event); true });
         let a = app.clone();
         // the new tab page is the one loaded from a string (about:blank): give its tiles their icons
@@ -1423,6 +1493,8 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
         loading: !start_url.is_empty() && !is_internal,
         url: start_url,
         title: String::new(),
+        last_active: std::time::Instant::now(),
+        asleep: None,
     };
     set_favicon(&tab);
     {
@@ -1499,6 +1571,11 @@ fn main() {
     }
     let single = single_instance();
     let event_loop = EventLoop::new();
+    // Make WebKit give memory back sooner: each web process starts dropping caches when it
+    // approaches this size (WebKit's own default is far higher on a machine with plenty of RAM).
+    let mut pressure = webkit2gtk::MemoryPressureSettings::new();
+    pressure.set_memory_limit(768);
+    webkit2gtk::WebsiteDataManager::set_memory_pressure_settings(&mut pressure);
     let window = WindowBuilder::new()
         .with_title(if private() { "Zolith (Private)" } else { "Zolith" })
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
@@ -1918,6 +1995,15 @@ fn main() {
         });
         let a = app.clone();
         gapp.connect_activate(move |_| { a.try_borrow().ok().map(|x| x.win.present()); });
+    }
+
+    // every half minute: put long-unused tabs to sleep
+    {
+        let a = app.clone();
+        glib::timeout_add_seconds_local(30, move || {
+            sleep_idle_tabs(&a);
+            glib::ControlFlow::Continue
+        });
     }
 
     event_loop.run(move |event, _, flow| {
