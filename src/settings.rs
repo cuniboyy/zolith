@@ -10,19 +10,36 @@ pub const ENGINES: [(&str, &str); 5] = [
 ];
 pub const CUSTOM: &str = "Custom";
 
+pub const ZOOMS: [u32; 9] = [67, 75, 80, 90, 100, 110, 125, 150, 200];
+pub const STARTUPS: [&str; 3] = ["newtab", "restore", "page"];
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
     pub engine: String,
     /// Search URL used when `engine` is `CUSTOM`.
     pub custom: String,
-    /// Empty means the built-in new tab page.
+    /// Home button target. Empty means the new tab page.
     pub home: String,
+    pub show_home: bool,
+    pub show_bookmarks: bool,
     pub adblock: bool,
+    /// One of `STARTUPS`.
+    pub startup: String,
+    /// Opened at startup when `startup` is "page".
+    pub startup_page: String,
+    /// Default page zoom in percent, one of `ZOOMS`.
+    pub zoom: u32,
+    /// Empty means ~/Downloads.
+    pub download_dir: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { engine: ENGINES[0].0.into(), custom: String::new(), home: String::new(), adblock: true }
+        Self {
+            engine: ENGINES[0].0.into(), custom: String::new(), home: String::new(),
+            show_home: true, show_bookmarks: true, adblock: true,
+            startup: STARTUPS[0].into(), startup_page: String::new(), zoom: 100, download_dir: String::new(),
+        }
     }
 }
 
@@ -39,27 +56,64 @@ pub fn data_dir() -> PathBuf {
 }
 
 impl Settings {
+    /// Apply one change. Values come from the settings page, so anything invalid is refused.
+    pub fn set(&mut self, key: &str, v: &str) -> bool {
+        let v = v.trim();
+        let flag = |v: &str| match v { "true" => Some(true), "false" => Some(false), _ => None };
+        match key {
+            "engine" if v == CUSTOM || ENGINES.iter().any(|e| e.0 == v) => self.engine = v.into(),
+            "custom" => self.custom = v.into(),
+            "home" => self.home = v.into(),
+            "startup" if STARTUPS.contains(&v) => self.startup = v.into(),
+            "startup_page" => self.startup_page = v.into(),
+            "zoom" => match v.parse() { Ok(z) if ZOOMS.contains(&z) => self.zoom = z, _ => return false },
+            "download_dir" if v.is_empty() || v.starts_with('/') => self.download_dir = v.into(),
+            "show_home" | "show_bookmarks" | "adblock" => {
+                let Some(b) = flag(v) else { return false };
+                match key { "show_home" => self.show_home = b, "show_bookmarks" => self.show_bookmarks = b, _ => self.adblock = b }
+            }
+            _ => return false,
+        }
+        true
+    }
+
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
+        let mut saw_startup = false;
         for (k, v) in text.lines().filter_map(|l| l.split_once('=')) {
-            let v = v.trim();
-            match k.trim() {
-                "engine" => s.engine = v.into(),
-                "custom" => s.custom = v.into(),
-                "home" => s.home = v.into(),
-                "adblock" => s.adblock = v != "false",
-                _ => {}
-            }
+            saw_startup |= k.trim() == "startup";
+            s.set(k.trim(), v);
+        }
+        // older versions opened the home page at startup
+        if !saw_startup && !s.home.is_empty() {
+            s.startup = "page".into();
+            s.startup_page = s.home.clone();
         }
         s
     }
 
     pub fn serialize(&self) -> String {
-        let clean = |v: &str| v.replace(['\n', '\r'], " ");
-        format!(
-            "engine={}\ncustom={}\nhome={}\nadblock={}\n",
-            clean(&self.engine), clean(&self.custom), clean(&self.home), self.adblock
-        )
+        self.pairs().iter().map(|(k, v)| format!("{k}={}\n", v.replace(['\n', '\r'], " "))).collect()
+    }
+
+    fn pairs(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("engine", self.engine.clone()), ("custom", self.custom.clone()), ("home", self.home.clone()),
+            ("show_home", self.show_home.to_string()), ("show_bookmarks", self.show_bookmarks.to_string()),
+            ("adblock", self.adblock.to_string()), ("startup", self.startup.clone()),
+            ("startup_page", self.startup_page.clone()), ("zoom", self.zoom.to_string()),
+            ("download_dir", self.download_dir.clone()),
+        ]
+    }
+
+    /// Settings as a JSON object for the settings page (all values as strings).
+    pub fn to_json(&self) -> String {
+        let body: Vec<String> = self.pairs().iter().map(|(k, v)| format!("{}:{}", quote(k), quote(v))).collect();
+        format!("{{{}}}", body.join(","))
+    }
+
+    pub fn download_dir(&self) -> PathBuf {
+        if self.download_dir.is_empty() { home_dir().join("Downloads") } else { PathBuf::from(&self.download_dir) }
     }
 
     pub fn load() -> Self {
@@ -147,15 +201,27 @@ mod tests {
             custom: "https://s.example/?a=b&q=%s".into(),
             home: "https://example.com/?x=1".into(),
             adblock: false,
+            show_home: false,
+            startup: "restore".into(),
+            zoom: 125,
+            download_dir: "/tmp/dl".into(),
+            ..Default::default()
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
         assert_eq!(s.search_template(), "https://s.example/?a=b&q=%s");
-        assert_eq!(Settings::parse("garbage\nengine=Nope\n"), Settings { engine: "Nope".into(), ..Default::default() });
+        // invalid values are ignored, not stored
+        assert_eq!(Settings::parse("garbage\nengine=Nope\nzoom=7\nadblock=yes\nstartup=x\n"), Settings::default());
+        // old files: a home page used to be the startup page too
+        let old = Settings::parse("home=https://a.example\n");
+        assert_eq!((old.startup.as_str(), old.startup_page.as_str()), ("page", "https://a.example"));
+        assert_eq!(Settings::parse("home=https://a.example\nstartup=newtab\n").startup, "newtab");
     }
 
     #[test]
     fn bad_engine_falls_back() {
         let mut s = Settings { engine: "Nope".into(), ..Default::default() };
+        assert!(!s.clone().set("download_dir", "relative/path"));
+        assert!(!s.clone().set("unknown", "x"));
         assert_eq!(s.search_template(), ENGINES[0].1);
         s.engine = CUSTOM.into();
         for bad in ["", "example.com/%s", "https://example.com/", "javascript:alert(%s)"] {

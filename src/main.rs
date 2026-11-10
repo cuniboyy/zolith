@@ -1,9 +1,15 @@
 mod adblock;
 mod settings;
 
-use gtk::{gdk, glib, glib::Propagation, pango, prelude::*};
+use gtk::{cairo, gdk, gdk_pixbuf, gio, glib, glib::Propagation, pango, prelude::*};
 use settings::{quote, to_url, Settings};
-use std::{cell::RefCell, fs, path::PathBuf, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    ffi::OsStr,
+    fs,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
@@ -14,21 +20,33 @@ use tao::{
 use webkit2gtk::{
     FindControllerExt, FindOptions, HitTestResultExt, LoadEvent, NavigationPolicyDecision,
     NavigationPolicyDecisionExt, NavigationType, PolicyDecisionExt, PolicyDecisionType, PrintOperation,
-    PrintOperationExt, ResponsePolicyDecision, ResponsePolicyDecisionExt, URIRequestExt, WebInspectorExt,
-    WebViewExt,
+    PrintOperationExt, ResponsePolicyDecision, ResponsePolicyDecisionExt, URIRequestExt, WebContextExt,
+    WebInspectorExt, WebViewExt, WebsiteDataManagerExtManual, WebsiteDataTypes,
 };
 use wry::{NewWindowResponse, WebContext, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
 
 const CSS: &str = include_str!("style.css");
 const NEWTAB: &str = include_str!("newtab.html");
+const SETTINGS: &str = include_str!("settings.html");
+/// The settings page is loaded under this address; only it may send IPC messages.
+const SETTINGS_URI: &str = "zolith://settings/";
 
-// shortcut: no history page, favicons, private mode, session restore or tab dragging.
+/// Tab width limits, like Chrome: tabs share the strip evenly between these.
+const TAB_MAX: i32 = 240;
+const TAB_MIN: i32 = 72;
+/// Below this width, inactive tabs hide their close button.
+const TAB_CLOSE_MIN: i32 = 110;
+/// Room kept for the new-tab button and the drag area beside it.
+const PLUS_W: i32 = 40;
+const DRAG_W: i32 = 48;
+
+// shortcut: no history page, private mode or tab dragging.
 
 #[derive(Clone, Copy)]
 enum Cmd {
     NewTab, CloseTab, Reopen, Reload, Back, Forward, Home, FocusUrl, Escape,
     Find, FindNext(bool), FindTyped, CloseFind, Zoom(i8), Print, Devtools, Bookmark,
-    NextTab(i32), NthTab(usize), Settings, Quit,
+    ToggleBookmarksBar, NextTab(i32), NthTab(usize), Settings, Quit,
 }
 
 struct Tab {
@@ -36,6 +54,10 @@ struct Tab {
     page: gtk::Box,
     head: gtk::EventBox,
     label: gtk::Label,
+    icon: gtk::Image,
+    spinner: gtk::Spinner,
+    close: gtk::Button,
+    sep: gtk::Separator,
     /// Owns the webview: dropping it destroys the widget.
     _view: wry::WebView,
     wv: webkit2gtk::WebView,
@@ -54,13 +76,18 @@ struct App {
     settings: Settings,
     downloads_hooked: bool,
     fullscreen: bool,
+    layout_pending: bool,
     win: gtk::ApplicationWindow,
     toolbar: gtk::Box,
     stack: gtk::Stack,
+    tabs_scroll: gtk::ScrolledWindow,
     tabs_box: gtk::Box,
+    strip: gtk::Box,
+    controls: gtk::Box,
     entry: gtk::Entry,
     back: gtk::Button,
     fwd: gtk::Button,
+    home_btn: gtk::Button,
     reload_img: gtk::Image,
     star_img: gtk::Image,
     bm_bar: gtk::Box,
@@ -82,11 +109,38 @@ fn with(app: &Sh, f: impl FnOnce(&mut App)) {
 }
 
 fn cur_wv(app: &Sh) -> Option<webkit2gtk::WebView> {
-    app.try_borrow().ok().map(|a| a.cur().wv.clone())
+    app.try_borrow().ok().and_then(|a| a.cur_tab().map(|t| t.wv.clone()))
+}
+
+fn run_js(wv: &webkit2gtk::WebView, js: &str) {
+    wv.evaluate_javascript(js, None, None, None::<&gio::Cancellable>, |_| {});
+}
+
+fn is_settings_url(u: &str) -> bool {
+    let u = u.trim().to_ascii_lowercase();
+    ["zolith://settings", "about:settings", "chrome://settings"]
+        .iter()
+        .any(|p| u.strip_prefix(p).is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '#', '?'])))
 }
 
 fn newtab_html(s: &Settings) -> String {
     NEWTAB.replace("__SEARCH__", &quote(s.search_template()))
+}
+
+fn settings_html(s: &Settings) -> String {
+    let engines: Vec<String> = settings::ENGINES.iter().map(|e| e.0).chain([settings::CUSTOM]).map(quote).collect();
+    let zooms: Vec<String> = settings::ZOOMS.iter().map(|z| z.to_string()).collect();
+    SETTINGS
+        .replace("__STATE__", &s.to_json())
+        .replace("__ENGINES__", &format!("[{}]", engines.join(",")))
+        .replace("__ZOOMS__", &format!("[{}]", zooms.join(",")))
+        .replace("__ADBLOCK_READY__", if adblock::is_ready() { "true" } else { "false" })
+        .replace("__VERSION__", env!("CARGO_PKG_VERSION"))
+}
+
+fn load_settings_page(app: &Sh, wv: &webkit2gtk::WebView) {
+    let Ok(s) = app.try_borrow().map(|a| a.settings.clone()) else { return };
+    wv.load_html(&settings_html(&s), Some(SETTINGS_URI));
 }
 
 fn marks_path() -> PathBuf {
@@ -108,14 +162,40 @@ fn save_marks(m: &[(String, String)]) {
     }
 }
 
+fn session_path() -> PathBuf {
+    settings::config_dir().join("session")
+}
+
+/// Saved tabs: (index of the selected tab, addresses with "" for the new tab page).
+fn load_session() -> (usize, Vec<String>) {
+    let text = fs::read_to_string(session_path()).unwrap_or_default();
+    let mut lines = text.lines();
+    let cur = lines.next().and_then(|l| l.parse().ok()).unwrap_or(0);
+    (cur, lines.map(str::to_string).collect())
+}
+
+/// A free file name in `dir`, adding " (1)", " (2)"... like other browsers.
+fn unique_path(dir: &Path, name: &OsStr) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let n = Path::new(name);
+    let stem = n.file_stem().unwrap_or(name).to_string_lossy();
+    let ext = n.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (1..).map(|i| dir.join(format!("{stem} ({i}){ext}"))).find(|p| !p.exists()).expect("some name is free")
+}
+
 impl App {
-    fn cur(&self) -> &Tab {
-        self.tabs.iter().find(|t| t.id == self.cur).expect("current tab exists")
+    fn cur_tab(&self) -> Option<&Tab> {
+        self.tabs.iter().find(|t| t.id == self.cur)
     }
 
     fn show_url(&self) {
-        let u = &self.cur().url;
-        self.entry.set_text(u.strip_prefix("https://").unwrap_or(u));
+        let Some(t) = self.cur_tab() else { return };
+        let u = &t.url;
+        let shown = if is_settings_url(u) { "zolith://settings" } else { u.strip_prefix("https://").unwrap_or(u) };
+        self.entry.set_text(shown);
     }
 
     fn set_status(&self, text: &str) {
@@ -123,25 +203,43 @@ impl App {
         self.status.set_visible(!text.is_empty());
     }
 
+    /// Show/hide the optional bars to match settings and fullscreen.
+    fn sync_bars(&self) {
+        self.toolbar.set_visible(!self.fullscreen);
+        self.bm_bar.set_visible(!self.fullscreen && self.settings.show_bookmarks && !self.marks.is_empty());
+        self.home_btn.set_visible(self.settings.show_home);
+    }
+
     fn set_chrome(&mut self, show: bool) {
         self.fullscreen = !show;
-        self.toolbar.set_visible(show);
-        self.bm_bar.set_visible(show && !self.marks.is_empty());
+        self.sync_bars();
         if !show {
             self.find_bar.hide();
             self.set_status("");
         }
     }
 
+    fn save_session(&self) {
+        let cur = self.tabs.iter().position(|t| t.id == self.cur).unwrap_or(0);
+        let mut text = format!("{cur}\n");
+        for t in &self.tabs {
+            text += &t.url.replace(['\n', '\r'], "");
+            text.push('\n');
+        }
+        let _ = fs::create_dir_all(settings::config_dir());
+        let _ = fs::write(session_path(), text);
+    }
+
     /// Sync the toolbar with the current tab.
     fn refresh(&self) {
-        let t = self.cur();
+        let Some(t) = self.cur_tab() else { return };
         if !self.entry.has_focus() {
             self.show_url();
         }
         let icon = if t.url.starts_with("https://") { Some("channel-secure-symbolic") }
             else if t.url.starts_with("http://") { Some("channel-insecure-symbolic") }
-            else if t.url.is_empty() { Some("system-search-symbolic") } else { None };
+            else if t.url.is_empty() { Some("system-search-symbolic") }
+            else if is_settings_url(&t.url) { Some("emblem-system-symbolic") } else { None };
         self.entry.set_icon_from_icon_name(gtk::EntryIconPosition::Primary, icon);
         let p = t.wv.estimated_load_progress();
         self.entry.set_progress_fraction(if t.loading && p < 1.0 { p.max(0.1) } else { 0.0 });
@@ -168,19 +266,64 @@ impl App {
         self.show_url();
         self.set_status("");
         self.refresh();
+        self.layout_tabs();
+        self.save_session();
+    }
+
+    /// Size tabs like Chrome: equal widths, as wide as fits up to TAB_MAX, never below TAB_MIN
+    /// (the strip scrolls instead).
+    fn layout_tabs(&self) {
+        let n = self.tabs.len().max(1) as i32;
+        // measured from the whole strip: the scroller itself is sized from the tabs
+        let avail = self.strip.allocated_width() - self.controls.allocated_width() - PLUS_W - DRAG_W;
+        let w = (avail / n).clamp(TAB_MIN, TAB_MAX);
+        let sel = self.tabs.iter().position(|t| t.id == self.cur);
+        for (i, t) in self.tabs.iter().enumerate() {
+            if t.head.width_request() != w {
+                t.head.set_size_request(w, -1);
+            }
+            let selected = Some(i) == sel;
+            t.close.set_visible(selected || w >= TAB_CLOSE_MIN);
+            // separators sit between tabs, never touching the selected one
+            t.sep.set_visible(!selected && Some(i + 1) != sel && i + 1 < self.tabs.len());
+        }
+        self.scroll_to_selected();
+    }
+
+    fn scroll_to_selected(&self) {
+        let Some(i) = self.tabs.iter().position(|t| t.id == self.cur) else { return };
+        let w = self.tabs[i].head.width_request().max(TAB_MIN) as f64;
+        let adj = self.tabs_scroll.hadjustment();
+        let x = i as f64 * w;
+        if x < adj.value() {
+            adj.set_value(x);
+        } else if x + w > adj.value() + adj.page_size() {
+            adj.set_value(x + w - adj.page_size());
+        }
     }
 
     /// A tab's page changed (address, load state or progress).
     fn tab_changed(&mut self, id: u32, loading: Option<bool>) {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else { return };
+        let old_url = t.url.clone();
         if let Some(u) = t.wv.uri() {
             t.url = if u.starts_with("about:") { String::new() } else { u.to_string() };
         }
         if let Some(l) = loading {
             t.loading = l;
+            t.spinner.set_visible(l);
+            t.icon.set_visible(!l);
+            if l { t.spinner.start() } else { t.spinner.stop() }
+        }
+        let url_changed = t.url != old_url;
+        if url_changed {
+            set_favicon(t);
         }
         if id == self.cur {
             self.refresh();
+        }
+        if url_changed {
+            self.save_session();
         }
     }
 
@@ -196,6 +339,40 @@ impl App {
     }
 }
 
+/// Show the site's icon in its tab, or a generic one.
+fn set_favicon(t: &Tab) {
+    let pixbuf = t.wv.favicon().and_then(|s| {
+        let img = cairo::ImageSurface::try_from(s.clone()).ok()?;
+        gdk::pixbuf_get_from_surface(&s, 0, 0, img.width(), img.height())
+    });
+    // shortcut: scaled to 16px, so icons are slightly soft on HiDPI screens
+    match pixbuf.and_then(|p| p.scale_simple(16, 16, gdk_pixbuf::InterpType::Bilinear)) {
+        Some(p) => t.icon.set_from_pixbuf(Some(&p)),
+        None => {
+            let name = if is_settings_url(&t.url) { "emblem-system-symbolic" } else { "web-browser-symbolic" };
+            t.icon.set_from_icon_name(Some(name), gtk::IconSize::Menu);
+        }
+    }
+}
+
+/// Re-run the tab layout once GTK is idle (sizes are only known after allocation).
+fn schedule_layout(app: &Sh) {
+    let Ok(mut a) = app.try_borrow_mut() else { return };
+    if a.layout_pending {
+        return;
+    }
+    a.layout_pending = true;
+    let app = app.clone();
+    glib::idle_add_local(move || match app.try_borrow_mut() {
+        Ok(mut a) => {
+            a.layout_pending = false;
+            a.layout_tabs();
+            glib::ControlFlow::Break
+        }
+        Err(_) => glib::ControlFlow::Continue,
+    });
+}
+
 /// Show a message in the status corner for a few seconds.
 fn flash(app: &Sh, msg: String) {
     with(app, |a| a.set_status(&msg));
@@ -208,7 +385,8 @@ fn flash(app: &Sh, msg: String) {
 /// Give keyboard focus to the page, or to the URL bar on the new tab page.
 fn focus_current(app: &Sh) {
     let Ok(a) = app.try_borrow() else { return };
-    let (wv, entry, blank) = { let t = a.cur(); (t.wv.clone(), a.entry.clone(), t.url.is_empty()) };
+    let Some(t) = a.cur_tab() else { return };
+    let (wv, entry, blank) = (t.wv.clone(), a.entry.clone(), t.url.is_empty());
     drop(a);
     if blank { entry.grab_focus() } else { wv.grab_focus() }
 }
@@ -222,6 +400,8 @@ fn load_home(app: &Sh, wv: &webkit2gtk::WebView) {
     let Ok(s) = app.try_borrow().map(|a| a.settings.clone()) else { return };
     if s.home.trim().is_empty() {
         wv.load_html(&newtab_html(&s), None);
+    } else if is_settings_url(&s.home) {
+        wv.load_html(&settings_html(&s), Some(SETTINGS_URI));
     } else {
         wv.load_uri(&to_url(&s.home, s.search_template()));
     }
@@ -239,12 +419,20 @@ fn find(app: &Sh, wv: &webkit2gtk::WebView, c: Cmd) {
     }
 }
 
+fn open_settings(app: &Sh) {
+    let existing = app.try_borrow().ok().and_then(|a| a.tabs.iter().find(|t| is_settings_url(&t.url)).map(|t| t.id));
+    match existing {
+        Some(id) => select_tab(app, id),
+        None => { new_tab(app, Some(SETTINGS_URI.into()), true); }
+    }
+}
+
 fn run(app: &Sh, c: Cmd) {
     match c {
-        Cmd::NewTab => new_tab(app, None, true),
+        Cmd::NewTab => { new_tab(app, None, true); }
         Cmd::Reopen => {
             let u = app.try_borrow_mut().ok().and_then(|mut a| a.closed.pop());
-            if let Some(u) = u { new_tab(app, Some(u), true) }
+            if let Some(u) = u { new_tab(app, Some(u), true); }
         }
         Cmd::CloseTab => {
             let id = app.try_borrow().map(|a| a.cur);
@@ -253,6 +441,10 @@ fn run(app: &Sh, c: Cmd) {
         Cmd::Quit => std::process::exit(0),
         Cmd::Settings => open_settings(app),
         Cmd::Bookmark => toggle_bookmark(app),
+        Cmd::ToggleBookmarksBar => {
+            let v = app.try_borrow().map(|a| !a.settings.show_bookmarks);
+            if let Ok(v) = v { apply_setting(app, "show_bookmarks", &v.to_string()) }
+        }
         Cmd::FocusUrl => with(app, |a| { a.entry.grab_focus(); a.entry.select_region(0, -1) }),
         Cmd::Find => with(app, |a| {
             if !a.fullscreen {
@@ -262,14 +454,14 @@ fn run(app: &Sh, c: Cmd) {
             }
         }),
         Cmd::NextTab(d) => {
-            let id = app.try_borrow().ok().map(|a| {
-                let i = a.tabs.iter().position(|t| t.id == a.cur).unwrap_or(0) as i32;
-                a.tabs[(i + d).rem_euclid(a.tabs.len() as i32) as usize].id
+            let id = app.try_borrow().ok().and_then(|a| {
+                let i = a.tabs.iter().position(|t| t.id == a.cur)? as i32;
+                Some(a.tabs[(i + d).rem_euclid(a.tabs.len() as i32) as usize].id)
             });
             if let Some(id) = id { select_tab(app, id) }
         }
         Cmd::NthTab(n) => {
-            // like Firefox: Ctrl+9 is always the last tab
+            // like Firefox and Chrome: Ctrl+9 is always the last tab
             let id = app.try_borrow().ok().and_then(|a| {
                 if n >= 8 { a.tabs.last() } else { a.tabs.get(n) }.map(|t| t.id)
             });
@@ -280,11 +472,23 @@ fn run(app: &Sh, c: Cmd) {
             match c {
                 Cmd::Back => wv.go_back(),
                 Cmd::Forward => wv.go_forward(),
-                Cmd::Reload => if wv.is_loading() { wv.stop_loading() } else { wv.reload() },
+                Cmd::Reload if wv.is_loading() => wv.stop_loading(),
+                Cmd::Reload => {
+                    // pages loaded from a string have nothing to re-fetch: rebuild them
+                    let url = app.try_borrow().ok().and_then(|a| a.cur_tab().map(|t| t.url.clone()));
+                    match url.as_deref() {
+                        Some("") => load_home_newtab(app, &wv),
+                        Some(u) if is_settings_url(u) => load_settings_page(app, &wv),
+                        _ => wv.reload(),
+                    }
+                }
                 Cmd::Home => load_home(app, &wv),
-                Cmd::Zoom(d) => wv.set_zoom_level(if d == 0 { 1.0 } else {
-                    ((wv.zoom_level() * 10.0).round() + d as f64).clamp(3.0, 30.0) / 10.0
-                }),
+                Cmd::Zoom(d) => {
+                    let default = app.try_borrow().map(|a| a.settings.zoom as f64 / 100.0).unwrap_or(1.0);
+                    wv.set_zoom_level(if d == 0 { default } else {
+                        ((wv.zoom_level() * 10.0).round() + d as f64).clamp(3.0, 30.0) / 10.0
+                    });
+                }
                 Cmd::Print => {
                     let win = app.try_borrow().ok().map(|a| a.win.clone());
                     PrintOperation::new(&wv).run_dialog(win.as_ref());
@@ -307,17 +511,110 @@ fn run(app: &Sh, c: Cmd) {
     }
 }
 
+fn load_home_newtab(app: &Sh, wv: &webkit2gtk::WebView) {
+    let Ok(s) = app.try_borrow().map(|a| a.settings.clone()) else { return };
+    wv.load_html(&newtab_html(&s), None);
+}
+
 fn go(app: &Sh, input: &str) {
     if input.trim().is_empty() { return }
     let Some(wv) = cur_wv(app) else { return };
+    if is_settings_url(input) {
+        load_settings_page(app, &wv);
+        return;
+    }
     let Ok(template) = app.try_borrow().map(|a| a.settings.search_template().to_string()) else { return };
     wv.load_uri(&to_url(input, &template));
     wv.grab_focus();
 }
 
+/// Change one setting, save it, and update everything that depends on it.
+fn apply_setting(app: &Sh, key: &str, value: &str) {
+    let (views, adblock, zoom) = {
+        let Ok(mut a) = app.try_borrow_mut() else { return };
+        let old = a.settings.clone();
+        if !a.settings.set(key, value) {
+            return;
+        }
+        a.settings.save();
+        a.sync_bars();
+        let views: Vec<_> = a.tabs.iter().map(|t| t.wv.clone()).collect();
+        let adblock = (old.adblock != a.settings.adblock).then_some(a.settings.adblock);
+        let zoom = (old.zoom != a.settings.zoom).then_some((old.zoom as f64 / 100.0, a.settings.zoom as f64 / 100.0));
+        (views, adblock, zoom)
+    };
+    for wv in &views {
+        if let Some(on) = adblock {
+            adblock::apply(wv, on);
+        }
+        // tabs the user zoomed by hand keep their zoom
+        if let Some((old, new)) = zoom {
+            if (wv.zoom_level() - old).abs() < 0.001 {
+                wv.set_zoom_level(new);
+            }
+        }
+    }
+}
+
+/// Messages from the settings page: "set\nkey\nvalue", "clear\nkinds\nrange", "pick-download-dir".
+fn handle_ipc(app: &Sh, id: u32, msg: &str) {
+    // re-check the sender is still the settings page now that we're on the main loop
+    let Some(wv) = app.try_borrow().ok().and_then(|a| {
+        a.tabs.iter().find(|t| t.id == id).filter(|t| is_settings_url(&t.url)).map(|t| t.wv.clone())
+    }) else { return };
+    let mut parts = msg.splitn(3, '\n');
+    match (parts.next(), parts.next(), parts.next()) {
+        // the download folder only changes through the folder picker below
+        (Some("set"), Some(k), Some(v)) if k != "download_dir" => apply_setting(app, k, v),
+        (Some("clear"), Some(kinds), Some(range)) => clear_data(&wv, kinds, range),
+        (Some("pick-download-dir"), _, _) => pick_download_dir(app, &wv),
+        _ => {}
+    }
+}
+
+fn clear_data(wv: &webkit2gtk::WebView, kinds: &str, range: &str) {
+    let Some(manager) = wv.website_data_manager() else { return };
+    let mut types = WebsiteDataTypes::empty();
+    for k in kinds.split(',') {
+        types |= match k {
+            "cookies" => WebsiteDataTypes::COOKIES | WebsiteDataTypes::LOCAL_STORAGE
+                | WebsiteDataTypes::SESSION_STORAGE | WebsiteDataTypes::INDEXEDDB_DATABASES
+                | WebsiteDataTypes::WEBSQL_DATABASES | WebsiteDataTypes::DOM_CACHE
+                | WebsiteDataTypes::SERVICE_WORKER_REGISTRATIONS | WebsiteDataTypes::OFFLINE_APPLICATION_CACHE,
+            "cache" => WebsiteDataTypes::DISK_CACHE | WebsiteDataTypes::MEMORY_CACHE,
+            _ => WebsiteDataTypes::empty(),
+        };
+    }
+    if types.is_empty() {
+        return;
+    }
+    let secs = match range { "hour" => 3600, "day" => 86_400, "week" => 604_800, "month" => 2_419_200, _ => 0 };
+    // the callback must be Send; it still runs on this (the main) thread
+    let page = glib::thread_guard::ThreadGuard::new(wv.clone());
+    manager.clear(types, glib::TimeSpan::from_seconds(secs), None::<&gio::Cancellable>, move |r| {
+        if let Err(e) = &r {
+            eprintln!("zolith: clearing data failed: {e}");
+        }
+        run_js(page.get_ref(), &format!("window.zolithCleared && zolithCleared({})", r.is_ok()));
+    });
+}
+
+fn pick_download_dir(app: &Sh, wv: &webkit2gtk::WebView) {
+    let Ok((win, current)) = app.try_borrow().map(|a| (a.win.clone(), a.settings.download_dir())) else { return };
+    let dialog = gtk::FileChooserNative::new(
+        Some("Choose download folder"), Some(&win), gtk::FileChooserAction::SelectFolder, Some("Select"), Some("Cancel"));
+    let _ = dialog.set_current_folder(&current);
+    if dialog.run() != gtk::ResponseType::Accept {
+        return;
+    }
+    let Some(dir) = dialog.filename().and_then(|p| p.to_str().map(str::to_string)) else { return };
+    apply_setting(app, "download_dir", &dir);
+    run_js(wv, &format!("window.zolithDownloadDir && zolithDownloadDir({})", quote(&dir)));
+}
+
 fn toggle_bookmark(app: &Sh) {
     with(app, |a| {
-        let t = a.cur();
+        let Some(t) = a.cur_tab() else { return };
         if t.url.is_empty() { return }
         let url = t.url.clone();
         let title = if t.title.is_empty() { url.clone() } else { t.title.clone() };
@@ -332,10 +629,8 @@ fn toggle_bookmark(app: &Sh) {
 }
 
 fn rebuild_bookmarks(app: &Sh) {
-    let Ok((bar, marks, fullscreen)) = app.try_borrow().map(|a| (a.bm_bar.clone(), a.marks.clone(), a.fullscreen))
-        else { return };
+    let Ok((bar, marks)) = app.try_borrow().map(|a| (a.bm_bar.clone(), a.marks.clone())) else { return };
     for c in bar.children() { bar.remove(&c) }
-    bar.set_visible(!marks.is_empty() && !fullscreen);
     for (url, title) in marks {
         let short: String = if title.chars().count() > 24 { title.chars().take(24).chain("…".chars()).collect() } else { title };
         let b = gtk::Button::with_label(&short);
@@ -346,6 +641,7 @@ fn rebuild_bookmarks(app: &Sh) {
         b.show_all();
         bar.pack_start(&b, false, false, 0);
     }
+    with(app, |a| a.sync_bars());
 }
 
 fn close_tab(app: &Sh, id: u32) {
@@ -360,27 +656,31 @@ fn close_tab(app: &Sh, id: u32) {
         if a.cur == id {
             let nid = a.tabs[i.min(a.tabs.len() - 1)].id;
             a.select(nid);
+        } else {
+            a.save_session();
         }
         t
     };
     // destroy the webview only after the App borrow is released
     drop(closed);
+    schedule_layout(app);
     focus_current(app);
 }
 
-fn new_tab(app: &Sh, url: Option<String>, select: bool) {
-    let (id, stack, tabs_box, ctx, s, hook_downloads, find_entry) = {
-        let Ok(mut a) = app.try_borrow_mut() else { return };
+fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
+    let (id, stack, tabs_box, ctx, s, first, find_entry) = {
+        let Ok(mut a) = app.try_borrow_mut() else { return None };
         a.next_id += 1;
-        let hook = !a.downloads_hooked;
+        let first = !a.downloads_hooked;
         a.downloads_hooked = true;
-        (a.next_id, a.stack.clone(), a.tabs_box.clone(), a.ctx.clone(), a.settings.clone(), hook, a.find_entry.clone())
+        (a.next_id, a.stack.clone(), a.tabs_box.clone(), a.ctx.clone(), a.settings.clone(), first, a.find_entry.clone())
     };
+    let is_settings = url.as_deref().is_some_and(is_settings_url);
     let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
     stack.add_named(&page, &id.to_string());
     page.show();
 
-    let (a1, a2) = (app.clone(), app.clone());
+    let (a1, a2, a3) = (app.clone(), app.clone(), app.clone());
     // One shared persistent context: cookies/logins survive restarts and are shared by tabs.
     let mut ctx = ctx.borrow_mut();
     let mut b = WebViewBuilder::new_with_web_context(&mut ctx)
@@ -389,17 +689,31 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) {
         .with_document_title_changed_handler(move |t| with(&a1, |a| a.set_title(id, &t)))
         .with_new_window_req_handler(move |u, _| {
             let a = a2.clone();
-            glib::idle_add_local_once(move || new_tab(&a, Some(u), true));
+            glib::idle_add_local_once(move || { new_tab(&a, Some(u), true); });
             NewWindowResponse::Deny
+        })
+        .with_ipc_handler(move |req| {
+            // wry gives every page window.ipc; only our own settings page may use it
+            if !is_settings_url(&req.uri().to_string()) {
+                return;
+            }
+            let (a, msg) = (a3.clone(), req.into_body());
+            glib::idle_add_local_once(move || handle_ipc(&a, id, &msg));
         });
     if s.adblock {
         b = b.with_initialization_script_for_main_only(adblock::SCRIPT, false);
     }
-    if hook_downloads {
+    if first {
         // wry attaches these to the shared context, so they must be registered exactly once
         let (d1, d2) = (app.clone(), app.clone());
         b = b
             .with_download_started_handler(move |_, path| {
+                let dir = d1.try_borrow().map(|a| a.settings.download_dir());
+                if let (Ok(dir), Some(name)) = (dir, path.file_name().map(OsStr::to_owned)) {
+                    if path.parent() != Some(dir.as_path()) && fs::create_dir_all(&dir).is_ok() {
+                        *path = unique_path(&dir, &name);
+                    }
+                }
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 flash(&d1, format!("Downloading {name}…"));
                 true
@@ -412,11 +726,24 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) {
                 });
             });
     }
-    b = match &url { Some(u) => b.with_url(u), None => b.with_html(newtab_html(&s)) };
+    b = match &url {
+        Some(_) if is_settings => b,
+        Some(u) => b.with_url(u),
+        None => b.with_html(newtab_html(&s)),
+    };
     let view = b.build_gtk(&page).expect("webview");
     drop(ctx);
     let wv = view.webview();
     adblock::apply(&wv, s.adblock);
+    wv.set_zoom_level(s.zoom as f64 / 100.0);
+    if first {
+        if let Some(c) = wv.context().filter(|c| c.favicon_database_directory().is_none()) {
+            c.set_favicon_database_directory(Some(&settings::data_dir().join("favicons").to_string_lossy()));
+        }
+    }
+    if is_settings {
+        wv.load_html(&settings_html(&s), Some(SETTINGS_URI));
+    }
 
     {
         let a = app.clone();
@@ -425,6 +752,10 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) {
         wv.connect_load_changed(move |_, ev| with(&a, |x| x.tab_changed(id, Some(ev != LoadEvent::Finished))));
         let a = app.clone();
         wv.connect_estimated_load_progress_notify(move |_| with(&a, |x| x.tab_changed(id, None)));
+        let a = app.clone();
+        wv.connect_favicon_notify(move |_| with(&a, |x| {
+            if let Some(t) = x.tabs.iter().find(|t| t.id == id) { set_favicon(t) }
+        }));
         let a = app.clone();
         wv.connect_mouse_target_changed(move |_, hit, _| {
             let link = hit.link_uri().map(|u| u.to_string()).unwrap_or_default();
@@ -458,7 +789,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) {
                 }
                 let Some(u) = n.request().and_then(|r| r.uri()) else { return false };
                 let (a, u) = (a.clone(), u.to_string());
-                glib::idle_add_local_once(move || new_tab(&a, Some(u), false));
+                glib::idle_add_local_once(move || { new_tab(&a, Some(u), false); });
                 d.ignore();
                 true
             }
@@ -466,22 +797,39 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) {
         });
     }
 
+    // ---- tab head: [spinner|icon] title [x] | separator ----
     let label = gtk::Label::new(Some("New Tab"));
     label.set_ellipsize(pango::EllipsizeMode::End);
     label.set_xalign(0.0);
-    // no width_chars: it forces a minimum width, so many tabs would stop the window shrinking
-    label.set_max_width_chars(24);
+    // tiny natural width + hexpand: the label fills whatever width the layout gives the tab,
+    // so every tab is exactly the same size regardless of its title
+    label.set_max_width_chars(1);
     label.set_hexpand(true);
+    let icon = gtk::Image::from_icon_name(Some("web-browser-symbolic"), gtk::IconSize::Menu);
+    icon.set_size_request(16, 16);
+    let spinner = gtk::Spinner::new();
+    spinner.set_size_request(16, 16);
     let close = gtk::Button::from_icon_name(Some("window-close-symbolic"), gtk::IconSize::Menu);
     close.set_relief(gtk::ReliefStyle::None);
+    close.set_valign(gtk::Align::Center);
     close.style_context().add_class("tab-close");
     let a = app.clone();
     close.connect_clicked(move |_| close_tab(&a, id));
-    let inner = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let inner = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    // GTK3 boxes ignore CSS padding, so spacing inside the tab is set here
+    inner.set_margin_start(10);
+    inner.set_margin_end(6);
+    inner.pack_start(&spinner, false, false, 0);
+    inner.pack_start(&icon, false, false, 0);
     inner.pack_start(&label, true, true, 0);
     inner.pack_start(&close, false, false, 0);
+    let sep = gtk::Separator::new(gtk::Orientation::Vertical);
+    sep.style_context().add_class("tab-sep");
+    let outer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    outer.pack_start(&inner, true, true, 0);
+    outer.pack_start(&sep, false, false, 0);
     let head = gtk::EventBox::new();
-    head.add(&inner);
+    head.add(&outer);
     head.add_events(gdk::EventMask::BUTTON_PRESS_MASK);
     head.style_context().add_class("tab");
     let a = app.clone();
@@ -494,110 +842,40 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) {
         Propagation::Stop
     });
     head.show_all();
-    tabs_box.pack_start(&head, true, true, 0);
+    spinner.hide();
+    head.set_size_request(TAB_MAX, -1);
+    tabs_box.pack_start(&head, false, false, 0);
 
-    let tab = Tab {
-        id, page, head, label, _view: view, wv,
-        // show the address right away instead of waiting for the first load event
-        url: url.clone().unwrap_or_default(),
-        title: String::new(),
-        loading: url.is_some(),
+    let start_url = match &url {
+        Some(_) if is_settings => SETTINGS_URI.to_string(),
+        Some(u) => u.clone(),
+        None => String::new(),
     };
-    let Ok(mut a) = app.try_borrow_mut() else { return };
-    a.tabs.push(tab);
-    if let Some(u) = url.as_deref().filter(|_| !select) {
-        a.set_title(id, u);
+    let tab = Tab {
+        id, page, head, label, icon, spinner, close, sep, _view: view, wv,
+        // show the address right away instead of waiting for the first load event
+        loading: !start_url.is_empty() && !is_settings,
+        url: start_url,
+        title: String::new(),
+    };
+    set_favicon(&tab);
+    {
+        let Ok(mut a) = app.try_borrow_mut() else { return Some(id) };
+        a.tabs.push(tab);
+        if let Some(u) = url.as_deref().filter(|_| !select && !is_settings) {
+            a.set_title(id, u);
+        }
+        if select {
+            a.select(id);
+        } else {
+            a.save_session();
+        }
     }
+    schedule_layout(app);
     if select {
-        a.select(id);
-        drop(a);
         focus_current(app);
     }
-}
-
-fn open_settings(app: &Sh) {
-    let Ok((parent, s)) = app.try_borrow().map(|a| (a.win.clone(), a.settings.clone())) else { return };
-    let w = gtk::Window::new(gtk::WindowType::Toplevel);
-    w.set_title("Settings");
-    w.set_transient_for(Some(&parent));
-    w.set_modal(true);
-    w.set_resizable(false);
-    w.set_default_size(480, -1);
-    w.set_type_hint(gdk::WindowTypeHint::Dialog);
-
-    let grid = gtk::Grid::new();
-    grid.set_row_spacing(12);
-    grid.set_column_spacing(16);
-    grid.set_border_width(20);
-    let row = |i: i32, text: &str, widget: &gtk::Widget| {
-        let l = gtk::Label::new(Some(text));
-        l.set_xalign(0.0);
-        grid.attach(&l, 0, i, 1, 1);
-        widget.set_hexpand(true);
-        grid.attach(widget, 1, i, 1, 1);
-    };
-
-    let engine = gtk::ComboBoxText::new();
-    for (name, _) in settings::ENGINES { engine.append(Some(name), name) }
-    engine.append(Some(settings::CUSTOM), settings::CUSTOM);
-    if !engine.set_active_id(Some(&s.engine)) { engine.set_active(Some(0)) }
-    let custom = gtk::Entry::new();
-    custom.set_placeholder_text(Some("https://example.com/search?q=%s"));
-    custom.set_text(&s.custom);
-    custom.set_sensitive(s.engine == settings::CUSTOM);
-    let home = gtk::Entry::new();
-    home.set_placeholder_text(Some("Empty = new tab page"));
-    home.set_text(&s.home);
-    let adblock_sw = gtk::Switch::new();
-    adblock_sw.set_active(s.adblock);
-    adblock_sw.set_halign(gtk::Align::Start);
-    let note = gtk::Label::new(Some(&format!(
-        "{}\nChanges save as you make them. The ad blocker switch fully applies to new tabs.\n\
-         Extra domains to block: one per line in {}",
-        if adblock::is_ready() { "Ad filter loaded." } else { "Ad filter failed to load, so only YouTube ad skipping is active." },
-        settings::config_dir().join("blocklist.txt").display(),
-    )));
-    note.set_xalign(0.0);
-    note.set_line_wrap(true);
-    note.set_max_width_chars(60);
-    note.style_context().add_class("dim-label");
-
-    row(0, "Search engine", engine.upcast_ref());
-    row(1, "Custom search URL", custom.upcast_ref());
-    row(2, "Home page", home.upcast_ref());
-    row(3, "Block ads and trackers", adblock_sw.upcast_ref());
-    grid.attach(&note, 0, 4, 2, 1);
-    w.add(&grid);
-
-    let apply = {
-        let (app, engine, custom, home, adblock_sw) = (app.clone(), engine.clone(), custom.clone(), home.clone(), adblock_sw.clone());
-        Rc::new(move || {
-            let new = Settings {
-                engine: engine.active_id().map(|s| s.to_string()).unwrap_or_default(),
-                custom: custom.text().trim().to_string(),
-                home: home.text().trim().to_string(),
-                adblock: adblock_sw.is_active(),
-            };
-            custom.set_sensitive(new.engine == settings::CUSTOM);
-            let mut views = vec![];
-            with(&app, |a| {
-                if a.settings.adblock != new.adblock {
-                    views = a.tabs.iter().map(|t| t.wv.clone()).collect();
-                }
-                a.settings = new.clone();
-            });
-            new.save();
-            for wv in &views { adblock::apply(wv, new.adblock) }
-        })
-    };
-    { let f = apply.clone(); engine.connect_changed(move |_| f()); }
-    { let f = apply.clone(); custom.connect_changed(move |_| f()); }
-    { let f = apply.clone(); home.connect_changed(move |_| f()); }
-    adblock_sw.connect_active_notify(move |_| apply());
-    w.connect_key_press_event(|w, e| {
-        if e.keyval() == gdk::keys::constants::Escape { w.close(); Propagation::Stop } else { Propagation::Proceed }
-    });
-    w.show_all();
+    Some(id)
 }
 
 fn icon_button(icon: &str) -> (gtk::Button, gtk::Image) {
@@ -637,6 +915,8 @@ fn main() {
     reload.set_tooltip_text(Some("Reload (Ctrl+R)"));
     home.set_tooltip_text(Some("Home (Alt+Home)"));
     star.set_tooltip_text(Some("Bookmark this page (Ctrl+D)"));
+    home.show_all();
+    home.set_no_show_all(true);
     let entry = gtk::Entry::new();
     entry.set_placeholder_text(Some("Search or enter address"));
     entry.style_context().add_class("urlbar");
@@ -689,15 +969,31 @@ fn main() {
     vbox.pack_start(&overlay, true, true, 0);
     vbox.pack_start(&find_bar, false, false, 0);
 
-    // ---- titlebar: tabs + window controls ----
+    // ---- titlebar: scrollable tab strip + window controls ----
     let tabs_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    tabs_box.set_homogeneous(true);
     let (plus, _) = icon_button("list-add-symbolic");
     plus.style_context().add_class("newtab-btn");
     plus.set_tooltip_text(Some("New tab (Ctrl+T)"));
+    plus.set_valign(gtk::Align::Center);
+    let tabs_scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+    // External: scrollable, no scrollbar, and the strip never forces the window wider
+    tabs_scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
+    tabs_scroll.set_kinetic_scrolling(false);
+    tabs_scroll.set_shadow_type(gtk::ShadowType::None);
+    // natural width = the tabs' width, so + sits right after the last tab; when they don't
+    // fit, GTK shrinks the scroller (its minimum is tiny) and the strip scrolls
+    tabs_scroll.set_propagate_natural_width(true);
+    // explicit: otherwise the tab labels' hexpand propagates up and the scroller grabs spare room
+    tabs_scroll.set_hexpand(false);
+    tabs_scroll.style_context().add_class("tabs-scroll");
+    tabs_scroll.add(&tabs_box);
+    if let Some(vp) = tabs_scroll.child().and_then(|c| c.downcast::<gtk::Viewport>().ok()) {
+        vp.set_shadow_type(gtk::ShadowType::None);
+    }
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_size_request(40, -1);
+    spacer.set_size_request(DRAG_W, -1);
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    controls.set_valign(gtk::Align::Center);
     let (wmin, _) = icon_button("window-minimize-symbolic");
     let (wmax, _) = icon_button("window-maximize-symbolic");
     let (wclose, _) = icon_button("window-close-symbolic");
@@ -706,8 +1002,11 @@ fn main() {
         controls.pack_start(b, false, false, 0);
     }
     let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    strip.pack_start(&tabs_box, false, true, 0);
-    strip.pack_start(&plus, false, false, 4);
+    strip.set_margin_top(8);
+    strip.set_margin_start(8);
+    strip.set_margin_end(4);
+    strip.pack_start(&tabs_scroll, false, false, 0);
+    strip.pack_start(&plus, false, false, 0);
     strip.pack_start(&spacer, true, true, 0);
     strip.pack_end(&controls, false, false, 0);
     let titlebar = gtk::EventBox::new();
@@ -738,13 +1037,36 @@ fn main() {
     adblock::init(&settings::data_dir(), &extra);
     let app: Sh = Rc::new(RefCell::new(App {
         next_id: 0, cur: 0, tabs: vec![], closed: vec![], marks: load_marks(), settings,
-        downloads_hooked: false, fullscreen: false, win: win.clone(), toolbar: toolbar.clone(),
-        stack, tabs_box, entry: entry.clone(), back: back.clone(), fwd: fwd.clone(), reload_img, star_img,
+        downloads_hooked: false, fullscreen: false, layout_pending: false, win: win.clone(),
+        toolbar: toolbar.clone(), stack, tabs_scroll: tabs_scroll.clone(), tabs_box: tabs_box.clone(),
+        strip: strip.clone(), controls: controls.clone(),
+        entry: entry.clone(), back: back.clone(), fwd: fwd.clone(), home_btn: home.clone(), reload_img, star_img,
         bm_bar, find_bar, find_entry: find_entry.clone(), status,
         ctx: Rc::new(RefCell::new(WebContext::new(Some(settings::data_dir())))),
     }));
 
     // ---- wiring ----
+    {
+        // re-fit tabs whenever the window changes width
+        let (a, last) = (app.clone(), Cell::new(-1));
+        strip.connect_size_allocate(move |_, alloc| {
+            if alloc.width() != last.replace(alloc.width()) { schedule_layout(&a) }
+        });
+        // mouse wheel scrolls an overflowing strip sideways
+        tabs_scroll.connect_scroll_event(|sw, e| {
+            let (dx, dy) = e.delta();
+            let step = match e.direction() {
+                gdk::ScrollDirection::Up | gdk::ScrollDirection::Left => -1.0,
+                gdk::ScrollDirection::Down | gdk::ScrollDirection::Right => 1.0,
+                _ => if dy.abs() > dx.abs() { dy } else { dx },
+            };
+            let adj = sw.hadjustment();
+            adj.set_value(adj.value() + step * 60.0);
+            Propagation::Stop
+        });
+        let a = app.clone();
+        tabs_box.connect_size_allocate(move |_, _| { if let Ok(x) = a.try_borrow() { x.scroll_to_selected() } });
+    }
     let bind = |b: &gtk::Button, c: Cmd| { let a = app.clone(); b.connect_clicked(move |_| run(&a, c)); };
     bind(&back, Cmd::Back); bind(&fwd, Cmd::Forward); bind(&reload, Cmd::Reload); bind(&home, Cmd::Home);
     bind(&star, Cmd::Bookmark); bind(&plus, Cmd::NewTab);
@@ -792,8 +1114,10 @@ fn main() {
                     (false, Some('g')) => Some(Cmd::FindNext(false)),
                     (true, Some('g')) => Some(Cmd::FindNext(true)),
                     (false, Some('d')) => Some(Cmd::Bookmark),
+                    (true, Some('b')) => Some(Cmd::ToggleBookmarksBar),
                     (false, Some('p')) => Some(Cmd::Print),
                     (true, Some('i')) => Some(Cmd::Devtools),
+                    (false, Some(',')) => Some(Cmd::Settings),
                     (false, Some('q')) => Some(Cmd::Quit),
                     _ if key == k::Tab || key == k::Page_Down => Some(Cmd::NextTab(1)),
                     _ if key == k::ISO_Left_Tab || key == k::Page_Up => Some(Cmd::NextTab(-1)),
@@ -835,15 +1159,32 @@ fn main() {
     }
 
     rebuild_bookmarks(&app);
-    let start = {
+
+    // ---- startup tabs ----
+    let (start, sel): (Vec<Option<String>>, usize) = {
         let a = app.borrow();
-        let t = a.settings.search_template().to_string();
-        std::env::args().nth(1).or_else(|| Some(a.settings.home.clone()).filter(|h| !h.trim().is_empty()))
-            .map(|u| to_url(&u, &t))
+        let s = &a.settings;
+        let t = s.search_template().to_string();
+        let page = |u: &str| if is_settings_url(u) { SETTINGS_URI.to_string() } else { to_url(u, &t) };
+        match std::env::args().nth(1) {
+            Some(arg) => (vec![Some(page(&arg))], 0),
+            None => match s.startup.as_str() {
+                "restore" => {
+                    let (cur, urls) = load_session();
+                    let tabs: Vec<_> = urls.into_iter().map(|u| (!u.is_empty()).then_some(u)).collect();
+                    if tabs.is_empty() { (vec![None], 0) } else { let n = tabs.len(); (tabs, cur.min(n - 1)) }
+                }
+                "page" if !s.startup_page.trim().is_empty() => (vec![Some(page(&s.startup_page))], 0),
+                _ => (vec![None], 0),
+            },
+        }
     };
-    new_tab(&app, start, true);
+    let ids: Vec<u32> = start.into_iter().enumerate().filter_map(|(i, u)| new_tab(&app, u, i == 0)).collect();
+    if let Some(&id) = ids.get(sel) { select_tab(&app, id) }
+
     titlebar.show_all();
     vbox.show_all();
+    with(&app, |a| a.sync_bars());
     window.set_visible(true);
 
     event_loop.run(move |event, _, flow| {
@@ -865,5 +1206,44 @@ mod tests {
         let html = newtab_html(&s);
         assert!(!html.contains("__SEARCH__;"));
         assert!(html.contains(r#"const template = "https://www.google.com/search?q=%s";"#));
+    }
+
+    #[test]
+    fn settings_page_is_filled_in() {
+        let html = settings_html(&Settings::default());
+        for p in ["__STATE__", "__ENGINES__", "__ZOOMS__", "__ADBLOCK_READY__", "__VERSION__"] {
+            assert!(!html.contains(p), "{p} left in page");
+        }
+        assert!(html.contains(r#"const ENGINES = ["DuckDuckGo","Google","Bing","Brave","Startpage","Custom"];"#));
+        assert!(html.contains("const ZOOMS = [67,75,80,90,100,110,125,150,200];"));
+        assert!(html.contains(r#""engine":"DuckDuckGo""#));
+    }
+
+    #[test]
+    fn settings_urls() {
+        for u in ["zolith://settings", "zolith://settings/", "ZOLITH://Settings/", "about:settings",
+                  "chrome://settings", " chrome://settings/#x "] {
+            assert!(is_settings_url(u), "{u}");
+        }
+        for u in ["", "https://zolith://settings", "zolith://settingsx", "zolith://settings.evil.com/",
+                  "https://example.com/zolith://settings"] {
+            assert!(!is_settings_url(u), "{u}");
+        }
+        // what wry hands the IPC handler for our page must pass the check
+        let req = wry::http::Request::builder().uri(SETTINGS_URI).body(()).unwrap();
+        assert!(is_settings_url(&req.uri().to_string()));
+    }
+
+    #[test]
+    fn download_names_do_not_collide() {
+        let dir = std::env::temp_dir().join(format!("zolith-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(unique_path(&dir, OsStr::new("a.tar.gz")), dir.join("a.tar.gz"));
+        fs::write(dir.join("a.zip"), "").unwrap();
+        fs::write(dir.join("a (1).zip"), "").unwrap();
+        assert_eq!(unique_path(&dir, OsStr::new("a.zip")), dir.join("a (2).zip"));
+        fs::write(dir.join("noext"), "").unwrap();
+        assert_eq!(unique_path(&dir, OsStr::new("noext")), dir.join("noext (1)"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1,0 +1,402 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>Settings</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #202124; --card: #292a2d; --text: #e8eaed; --sub: #9aa0a6; --line: rgba(255, 255, 255, .1);
+    --blue: #8ab4f8; --blue-bg: rgba(138, 180, 248, .14); --field: #3c4043; --red: #f28b82;
+  }
+  * { box-sizing: border-box }
+  html, body { margin: 0; height: 100% }
+  body { background: var(--bg); color: var(--text); font: 13px/1.5 Roboto, "Segoe UI", system-ui, sans-serif }
+  svg { width: 20px; height: 20px; fill: currentColor; flex: none }
+
+  header {
+    position: sticky; top: 0; z-index: 2; height: 56px; display: flex; align-items: center;
+    padding: 0 16px; background: var(--bg); border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 16px; width: 240px; font-size: 22px; font-weight: 400 }
+  .brand button.icon { display: none }
+  .search {
+    flex: 1; max-width: 680px; margin: 0 auto; display: flex; align-items: center; gap: 12px;
+    height: 40px; padding: 0 12px; border-radius: 20px; background: var(--field); color: var(--sub);
+  }
+  .search:focus-within { outline: 2px solid var(--blue) }
+  .search input { flex: 1; background: none; border: 0; outline: 0; color: var(--text); font: inherit; font-size: 14px }
+  .search button { visibility: hidden }
+  .search.has-text button { visibility: visible }
+  header .spacer { width: 240px }
+  button.icon {
+    width: 32px; height: 32px; border-radius: 50%; border: 0; background: none; color: var(--sub);
+    display: grid; place-items: center; cursor: pointer; padding: 0;
+  }
+  button.icon:hover { background: rgba(255, 255, 255, .08) }
+
+  .layout { display: flex; align-items: flex-start }
+  nav { position: sticky; top: 56px; width: 256px; flex: none; padding: 8px 0 }
+  nav a {
+    display: flex; align-items: center; gap: 20px; height: 40px; padding: 0 24px; margin-right: 16px;
+    color: var(--text); text-decoration: none; border-radius: 0 20px 20px 0; font-size: 13px; font-weight: 500;
+  }
+  nav a svg { color: var(--sub) }
+  nav a:hover { background: rgba(255, 255, 255, .05) }
+  nav a.active { background: var(--blue-bg); color: var(--blue) }
+  nav a.active svg { color: var(--blue) }
+  main { flex: 1; max-width: 680px; margin: 0 auto; padding: 4px 0 64px }
+  header .spacer, nav { flex-shrink: 0 }
+  .layout::after { content: ""; width: 256px; flex: none }
+
+  section { display: none }
+  section.show { display: block }
+  h2 { font-size: 16px; font-weight: 400; margin: 24px 0 12px; padding-left: 4px }
+  .card { background: var(--card); border-radius: 8px; box-shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 1px 3px 1px rgba(0, 0, 0, .15) }
+  .row { display: flex; align-items: center; gap: 16px; min-height: 48px; padding: 12px 20px }
+  .row + .row, .sub + .row, .row + .sub { border-top: 1px solid var(--line) }
+  .row.hidden, .sub.hidden { display: none }
+  .row.clickable { cursor: pointer }
+  .row.clickable:hover { background: rgba(255, 255, 255, .04) }
+  .label { flex: 1; min-width: 0 }
+  .secondary { color: var(--sub); overflow-wrap: anywhere }
+  .error { color: var(--red) }
+  .sub { padding: 0 20px 12px 56px }
+  code { font-family: inherit; color: var(--text) }
+
+  select, input[type=text] {
+    font: inherit; color: var(--text); background: var(--field); border: 0; border-radius: 4px;
+    height: 32px; padding: 0 10px; outline: none;
+  }
+  select { min-width: 200px; cursor: pointer }
+  select:focus, input[type=text]:focus { outline: 2px solid var(--blue) }
+  input[type=text] { width: 100% }
+  input.invalid { outline: 2px solid var(--red) }
+
+  .toggle { position: relative; width: 34px; height: 14px; flex: none; cursor: pointer }
+  .toggle input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer }
+  .toggle .bar { position: absolute; inset: 0; border-radius: 8px; background: #5f6368; transition: background .1s }
+  .toggle .knob {
+    position: absolute; top: -3px; left: -2px; width: 20px; height: 20px; border-radius: 50%;
+    background: #bdc1c6; box-shadow: 0 1px 3px rgba(0, 0, 0, .4); transition: transform .1s, background .1s;
+  }
+  .toggle input:checked ~ .bar { background: rgba(138, 180, 248, .5) }
+  .toggle input:checked ~ .knob { transform: translateX(18px); background: var(--blue) }
+  .toggle input:focus-visible ~ .knob { outline: 2px solid var(--blue); outline-offset: 2px }
+
+  .radio { display: flex; align-items: center; gap: 20px; min-height: 48px; padding: 0 20px; cursor: pointer }
+  .radio + .radio, .radio + .sub, .sub + .radio { border-top: 1px solid var(--line) }
+  .radio input[type=radio] { appearance: none; width: 16px; height: 16px; border: 2px solid var(--sub); border-radius: 50%; margin: 0; flex: none }
+  .radio input[type=radio]:checked { border-color: var(--blue); background: radial-gradient(var(--blue) 0 3px, transparent 4px) }
+  .radio input[type=radio]:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px }
+
+  .btn {
+    font: inherit; font-weight: 500; height: 32px; padding: 0 16px; border-radius: 4px; cursor: pointer;
+    background: none; color: var(--blue); border: 1px solid #5f6368; flex: none;
+  }
+  .btn:hover { background: rgba(138, 180, 248, .08) }
+  .btn.action { background: var(--blue); color: #202124; border-color: var(--blue) }
+  .btn.action:hover { background: #aecbfa }
+  .btn:disabled { opacity: .5; cursor: default }
+  .chev { color: var(--sub) }
+
+  .about { display: flex; align-items: center; gap: 16px; padding: 20px }
+  .logo {
+    width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; font-weight: 700; font-size: 22px;
+    background: linear-gradient(135deg, #00e5ff, #7c3aed); color: #fff;
+  }
+  #empty { display: none; text-align: center; color: var(--sub); padding: 48px 0 }
+
+  dialog {
+    width: 512px; max-width: calc(100vw - 32px); padding: 0; border: 0; border-radius: 8px;
+    background: var(--card); color: var(--text); box-shadow: 0 4px 12px rgba(0, 0, 0, .5);
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .6) }
+  dialog h3 { font-size: 16px; font-weight: 400; margin: 0; padding: 20px 20px 12px }
+  dialog .body { padding: 0 20px }
+  dialog .check { display: flex; gap: 16px; align-items: flex-start; padding: 12px 0; cursor: pointer }
+  dialog .check input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue) }
+  dialog .foot { display: flex; justify-content: flex-end; gap: 8px; padding: 20px }
+  dialog .range { display: flex; align-items: center; gap: 12px; padding: 8px 0 12px }
+
+  @media (max-width: 1000px) {
+    .brand { width: auto }
+    .brand button.icon { display: grid }
+    header .spacer, .layout::after { display: none }
+    nav { position: fixed; top: 56px; bottom: 0; left: 0; z-index: 3; background: var(--card); display: none; box-shadow: 2px 0 8px rgba(0, 0, 0, .4) }
+    nav.open { display: block }
+    main { padding-left: 16px; padding-right: 16px }
+    .search { margin-left: 16px }
+  }
+</style>
+
+<header>
+  <div class="brand">
+    <button class="icon" id="menu" aria-label="Main menu"><svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg></button>
+    Settings
+  </div>
+  <label class="search" id="search">
+    <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+    <input id="q" placeholder="Search settings" autocomplete="off" spellcheck="false">
+    <button class="icon" id="clearq" aria-label="Clear search"><svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+  </label>
+  <div class="spacer"></div>
+</header>
+
+<div class="layout">
+  <nav id="nav">
+    <a href="#" data-page="search"><svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>Search engine</a>
+    <a href="#" data-page="startup"><svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42A6.92 6.92 0 0 1 19 12c0 3.87-3.13 7-7 7A6.995 6.995 0 0 1 7.58 6.58L6.17 5.17A8.932 8.932 0 0 0 3 12a9 9 0 0 0 18 0c0-2.74-1.23-5.18-3.17-6.83z"/></svg>On startup</a>
+    <a href="#" data-page="appearance"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0 0 18c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>Appearance</a>
+    <a href="#" data-page="privacy"><svg viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>Privacy and security</a>
+    <a href="#" data-page="downloads"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>Downloads</a>
+    <a href="#" data-page="about"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>About Zolith</a>
+  </nav>
+
+  <main>
+    <section data-page="search">
+      <h2>Search engine</h2>
+      <div class="card">
+        <div class="row">
+          <div class="label">Search engine used in the address bar<div class="secondary">Also used on the New Tab page</div></div>
+          <select id="engine"></select>
+        </div>
+        <div class="sub" id="custom-row">
+          <input type="text" id="custom" placeholder="https://example.com/search?q=%s" spellcheck="false">
+          <div class="secondary" id="custom-hint">Use <code>%s</code> where the search words go</div>
+        </div>
+      </div>
+    </section>
+
+    <section data-page="startup">
+      <h2>On startup</h2>
+      <div class="card">
+        <label class="radio"><input type="radio" name="startup" value="newtab">Open the New Tab page</label>
+        <label class="radio"><input type="radio" name="startup" value="restore">Continue where you left off</label>
+        <label class="radio"><input type="radio" name="startup" value="page">Open a specific page</label>
+        <div class="sub" id="startup-row">
+          <input type="text" id="startup_page" placeholder="Enter URL" spellcheck="false">
+        </div>
+      </div>
+    </section>
+
+    <section data-page="appearance">
+      <h2>Appearance</h2>
+      <div class="card">
+        <div class="row">
+          <div class="label">Show home button<div class="secondary" id="home-desc"></div></div>
+          <label class="toggle"><input type="checkbox" id="show_home" aria-label="Show home button"><span class="bar"></span><span class="knob"></span></label>
+        </div>
+        <div class="sub" id="home-row">
+          <label class="radio" style="padding:0"><input type="radio" name="home" value="newtab">New Tab page</label>
+          <label class="radio" style="padding:0;border:0"><input type="radio" name="home" value="custom">
+            <input type="text" id="home" placeholder="Enter custom web address" spellcheck="false"></label>
+        </div>
+        <div class="row">
+          <div class="label">Show bookmarks bar</div>
+          <label class="toggle"><input type="checkbox" id="show_bookmarks" aria-label="Show bookmarks bar"><span class="bar"></span><span class="knob"></span></label>
+        </div>
+        <div class="row">
+          <div class="label">Page zoom</div>
+          <select id="zoom"></select>
+        </div>
+      </div>
+    </section>
+
+    <section data-page="privacy">
+      <h2>Privacy and security</h2>
+      <div class="card">
+        <div class="row clickable" id="open-clear" tabindex="0" role="button">
+          <div class="label">Clear browsing data<div class="secondary">Delete cookies, site data and cache</div></div>
+          <svg class="chev" viewBox="0 0 24 24"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+        </div>
+        <div class="row">
+          <div class="label">Block ads and trackers
+            <div class="secondary" id="adblock-desc">Blocks known ad and tracking sites and skips YouTube ads. Applies fully to new tabs.</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="adblock" aria-label="Block ads and trackers"><span class="bar"></span><span class="knob"></span></label>
+        </div>
+        <div class="row">
+          <div class="label">Your own blocked sites<div class="secondary">One domain per line in <code>~/.config/zolith/blocklist.txt</code>, used after restarting Zolith</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section data-page="downloads">
+      <h2>Downloads</h2>
+      <div class="card">
+        <div class="row">
+          <div class="label">Location<div class="secondary" id="download-dir"></div></div>
+          <button class="btn" id="pick-dir">Change</button>
+        </div>
+      </div>
+    </section>
+
+    <section data-page="about">
+      <h2>About Zolith</h2>
+      <div class="card">
+        <div class="about">
+          <div class="logo">Z</div>
+          <div><div style="font-size:16px">Zolith</div><div class="secondary">Version __VERSION__ · Built with Rust and WebKitGTK</div></div>
+        </div>
+      </div>
+    </section>
+
+    <div id="empty">No search results found</div>
+  </main>
+</div>
+
+<dialog id="clear-dialog">
+  <h3>Clear browsing data</h3>
+  <div class="body">
+    <div class="range">Time range
+      <select id="range">
+        <option value="hour">Last hour</option>
+        <option value="day">Last 24 hours</option>
+        <option value="week">Last 7 days</option>
+        <option value="month">Last 4 weeks</option>
+        <option value="all" selected>All time</option>
+      </select>
+    </div>
+    <label class="check"><input type="checkbox" id="c-cookies" checked>
+      <div>Cookies and other site data<div class="secondary">Signs you out of most sites</div></div></label>
+    <label class="check"><input type="checkbox" id="c-cache" checked>
+      <div>Cached images and files<div class="secondary">Some sites may load more slowly on your next visit</div></div></label>
+  </div>
+  <div class="foot">
+    <button class="btn" id="cancel-clear">Cancel</button>
+    <button class="btn action" id="do-clear">Clear data</button>
+  </div>
+</dialog>
+
+<script>
+  // Filled in by the browser.
+  const S = __STATE__;
+  const ENGINES = __ENGINES__;
+  const ZOOMS = __ZOOMS__;
+  const ADBLOCK_READY = __ADBLOCK_READY__;
+
+  const $ = (id) => document.getElementById(id);
+  const send = (...parts) => window.ipc.postMessage(parts.map((p) => String(p).replace(/\n/g, ' ')).join('\n'));
+  const set = (key, value) => { S[key] = String(value); send('set', key, value); };
+  const isWebUrl = (u) => /^https?:\/\/[^\s/]+/i.test(u);
+
+  // ---- search engine ----
+  for (const name of ENGINES) $('engine').add(new Option(name, name));
+  $('engine').value = S.engine;
+  const checkCustom = () => {
+    const v = $('custom').value.trim();
+    const ok = isWebUrl(v) && v.includes('%s');
+    $('custom').classList.toggle('invalid', v !== '' && !ok);
+    $('custom-hint').className = v !== '' && !ok ? 'error' : 'secondary';
+    $('custom-hint').innerHTML = v !== '' && !ok
+      ? 'Must start with https:// and contain <code>%s</code>. Using DuckDuckGo until fixed.'
+      : 'Use <code>%s</code> where the search words go';
+  };
+  const syncEngine = () => $('custom-row').classList.toggle('hidden', S.engine !== 'Custom');
+  $('custom').value = S.custom;
+  $('engine').onchange = () => { set('engine', $('engine').value); syncEngine(); if (S.engine === 'Custom') $('custom').focus(); };
+  $('custom').oninput = checkCustom;
+  $('custom').onchange = () => set('custom', $('custom').value.trim());
+  syncEngine(); checkCustom();
+
+  // ---- startup ----
+  const syncStartup = () => $('startup-row').classList.toggle('hidden', S.startup !== 'page');
+  for (const r of document.getElementsByName('startup')) {
+    r.checked = r.value === S.startup;
+    r.onchange = () => { set('startup', r.value); syncStartup(); if (r.value === 'page') $('startup_page').focus(); };
+  }
+  $('startup_page').value = S.startup_page;
+  $('startup_page').onchange = () => set('startup_page', $('startup_page').value.trim());
+  syncStartup();
+
+  // ---- appearance ----
+  const homeRadios = document.getElementsByName('home');
+  const syncHome = () => {
+    $('home-row').classList.toggle('hidden', S.show_home !== 'true');
+    $('home-desc').textContent = S.home ? S.home : 'New Tab page';
+    homeRadios[0].checked = !S.home; homeRadios[1].checked = !!S.home;
+  };
+  $('show_home').checked = S.show_home === 'true';
+  $('show_home').onchange = () => { set('show_home', $('show_home').checked); syncHome(); };
+  $('home').value = S.home;
+  homeRadios[0].onchange = () => { $('home').value = ''; set('home', ''); syncHome(); };
+  homeRadios[1].onchange = () => $('home').focus();
+  $('home').onfocus = () => { homeRadios[1].checked = true; };
+  $('home').onchange = () => { set('home', $('home').value.trim()); syncHome(); };
+  syncHome();
+  $('show_bookmarks').checked = S.show_bookmarks === 'true';
+  $('show_bookmarks').onchange = () => set('show_bookmarks', $('show_bookmarks').checked);
+  for (const z of ZOOMS) $('zoom').add(new Option(z + '%', z));
+  $('zoom').value = S.zoom;
+  $('zoom').onchange = () => set('zoom', $('zoom').value);
+
+  // ---- privacy ----
+  $('adblock').checked = S.adblock === 'true';
+  $('adblock').onchange = () => set('adblock', $('adblock').checked);
+  if (!ADBLOCK_READY) {
+    $('adblock-desc').className = 'error';
+    $('adblock-desc').textContent = 'The ad filter failed to load, so only YouTube ad skipping is active.';
+  }
+  const dlg = $('clear-dialog');
+  $('open-clear').onclick = () => { $('do-clear').disabled = false; $('do-clear').textContent = 'Clear data'; dlg.showModal(); };
+  $('open-clear').onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('open-clear').click(); } };
+  $('cancel-clear').onclick = () => dlg.close();
+  const syncClearBtn = () => { $('do-clear').disabled = !$('c-cookies').checked && !$('c-cache').checked; };
+  $('c-cookies').onchange = syncClearBtn; $('c-cache').onchange = syncClearBtn;
+  $('do-clear').onclick = () => {
+    const kinds = [$('c-cookies').checked && 'cookies', $('c-cache').checked && 'cache'].filter(Boolean).join(',');
+    $('do-clear').disabled = true; $('do-clear').textContent = 'Clearing…';
+    send('clear', kinds, $('range').value);
+  };
+  window.zolithCleared = (ok) => {
+    if (ok) { dlg.close(); } else { $('do-clear').disabled = false; $('do-clear').textContent = 'Try again'; }
+  };
+
+  // ---- downloads ----
+  const showDir = () => { $('download-dir').textContent = S.download_dir || '~/Downloads'; };
+  $('pick-dir').onclick = () => send('pick-download-dir');
+  window.zolithDownloadDir = (dir) => { S.download_dir = dir; showDir(); };
+  showDir();
+
+  // ---- navigation and search ----
+  const sections = [...document.querySelectorAll('section')];
+  const links = [...document.querySelectorAll('nav a')];
+  const showPage = (page) => {
+    for (const s of sections) s.classList.toggle('show', s.dataset.page === page);
+    for (const a of links) a.classList.toggle('active', a.dataset.page === page);
+    $('nav').classList.remove('open');
+    scrollTo(0, 0);
+  };
+  let page = 'search';
+  const runSearch = () => {
+    const q = $('q').value.trim().toLowerCase();
+    $('search').classList.toggle('has-text', q !== '');
+    if (!q) {
+      for (const el of document.querySelectorAll('.card > .row, .card > .radio, .card > .about')) el.style.display = '';
+      $('empty').style.display = 'none';
+      return showPage(page);
+    }
+    let any = false;
+    for (const s of sections) {
+      const title = s.querySelector('h2').textContent.toLowerCase();
+      let hit = false;
+      for (const row of s.querySelectorAll('.card > .row, .card > .radio, .card > .about')) {
+        const match = title.includes(q) || row.textContent.toLowerCase().includes(q);
+        row.style.display = match ? '' : 'none';
+        hit ||= match;
+      }
+      s.classList.toggle('show', hit);
+      any ||= hit;
+    }
+    for (const a of links) a.classList.remove('active');
+    $('empty').style.display = any ? 'none' : 'block';
+  };
+  $('q').oninput = runSearch;
+  $('clearq').onclick = (e) => { e.preventDefault(); $('q').value = ''; runSearch(); $('q').focus(); };
+  $('menu').onclick = () => $('nav').classList.toggle('open');
+  for (const a of links) a.onclick = (e) => { e.preventDefault(); page = a.dataset.page; $('q').value = ''; runSearch(); };
+  showPage(page);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '/' && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); $('q').focus(); }
+  });
+</script>

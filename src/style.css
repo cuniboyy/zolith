@@ -1,18 +1,29 @@
-/* Firefox "Proton" dark palette */
-.titlebar-box { background: #1c1b22; padding: 4px 6px 0 6px; }
-.tab {
-  background: transparent; color: #cfcfd8; border-radius: 6px;
-  padding: 0 4px 0 12px; margin: 2px 1px 6px 1px; min-height: 32px;
+/* Dark palette; tab strip shaped like Chrome's */
+.titlebar-box { background: #1c1b22; border: none; box-shadow: none; }
+.tabs-scroll, .tabs-scroll viewport { background: transparent; border: none; box-shadow: none; }
+.tabs-scroll undershoot, .tabs-scroll overshoot { background: none; box-shadow: none; }
+
+/* Selected tab is the toolbar's colour and touches it, so they read as one surface. */
+.tab { background: transparent; color: #b8b8c4; border-radius: 8px 8px 0 0; min-height: 34px; }
+.tab:hover { background: rgba(251,251,254,0.06); }
+.tab.selected { background: #2b2a33; color: #fbfbfe; }
+.tab label { color: inherit; font-size: 12px; }
+.tab image { color: #b8b8c4; }
+.tab.selected image { color: #fbfbfe; }
+separator.tab-sep { background: #4a4a55; min-width: 1px; margin: 9px 0; }
+
+.tab-close {
+  background: transparent; border: none; box-shadow: none; border-radius: 50%;
+  padding: 0; min-width: 20px; min-height: 20px; color: inherit;
 }
-.tab:hover { background: rgba(251,251,254,0.1); }
-.tab.selected { background: #42414d; color: #fbfbfe; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
-.tab label { color: inherit; font-size: 13px; }
-.tab-close, .newtab-btn, .winbtn {
-  background: transparent; border: none; box-shadow: none; border-radius: 4px;
-  padding: 0; min-width: 24px; min-height: 24px; color: #fbfbfe;
+.tab-close image { -gtk-icon-transform: scale(0.8); }
+.tab-close:hover { background: rgba(251,251,254,0.16); }
+.newtab-btn, .winbtn {
+  background: transparent; border: none; box-shadow: none;
+  padding: 0; color: #fbfbfe;
 }
-.tab-close:hover, .newtab-btn:hover, .winbtn:hover { background: rgba(251,251,254,0.18); }
-.newtab-btn { margin: 0 4px 4px 4px; min-height: 28px; min-width: 28px; }
+.newtab-btn { margin: 0 6px 4px 4px; min-height: 28px; min-width: 28px; border-radius: 50%; }
+.newtab-btn:hover, .winbtn:hover { background: rgba(251,251,254,0.14); }
 .winbtn { min-width: 36px; min-height: 28px; border-radius: 4px; margin: 0 1px 4px 1px; }
 
 .toolbar { background: #2b2a33; padding: 6px 8px; border-bottom: 1px solid #0c0c0d; }
