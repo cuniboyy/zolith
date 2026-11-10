@@ -7,6 +7,7 @@ mod menus;
 mod permissions;
 mod settings;
 mod suggest;
+mod tileicons;
 
 use gtk::{cairo, gdk, gdk_pixbuf, gio, glib, glib::Propagation, pango, prelude::*};
 use settings::{is_address, quote, to_url, Settings};
@@ -1268,6 +1269,13 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
         permissions::hook(app, &wv);
         if let Some(c) = wv.context() { c.set_spell_checking_enabled(true) }
         wv.connect_context_menu(move |wv, _menu, event, hit| { menus::page_menu(&a, wv, hit, event); true });
+        let a = app.clone();
+        // the new tab page is the one loaded from a string (about:blank): give its tiles their icons
+        wv.connect_load_changed(move |wv, ev| {
+            if ev == LoadEvent::Finished && wv.uri().is_some_and(|u| u.starts_with("about:")) {
+                tileicons::fill(&a, wv);
+            }
+        });
         let a = app.clone();
         wv.connect_uri_notify(move |_| with(&a, |x| x.tab_changed(id, None)));
         let a = app.clone();

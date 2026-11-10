@@ -48,7 +48,7 @@ No Electron, no Chromium: just GTK and your system's WebKit.
 ![Settings](docs/screenshots/settings.png)
 
 **Everything else**
-- A new tab page with your most-visited sites
+- A new tab page with your most-visited sites, each with its site icon
 - Right-click menus for links, images, selected text and pages
 - A downloads panel with progress, cancel, open and show-in-folder
 - A history page (`Ctrl+H`) and Back/Forward history menus (right-click the buttons)

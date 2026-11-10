@@ -25,6 +25,7 @@
   .tile:hover { background: #2b2a33 }
   .tile .badge { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
     font-size: 20px; font-weight: 600; color: #fff }
+  .tile .badge img { width: 28px; height: 28px; object-fit: contain }
   .tile .name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cfcfd8 }
   @media (max-width: 560px) { #top { grid-template-columns: repeat(2, 104px) } }
 </style>
@@ -43,7 +44,7 @@
     let host = url;
     try { host = new URL(url).host.replace(/^www\./, ''); } catch (e) {}
     const a = document.createElement('a');
-    a.className = 'tile'; a.href = url; a.title = title || host;
+    a.className = 'tile'; a.href = url; a.title = title || host; a.dataset.url = url;
     const badge = document.createElement('div');
     badge.className = 'badge'; badge.textContent = host.charAt(0).toUpperCase();
     badge.style.background = 'hsl(' + hue(host) + ' 45% 38%)';
@@ -52,6 +53,15 @@
     a.append(badge, name);
     document.getElementById('top').append(a);
   }
+  // the browser calls this with each site's icon once it has it; until then the letter shows
+  window.zolithIcon = (url, src) => {
+    for (const t of document.querySelectorAll('.tile')) {
+      if (t.dataset.url !== url) continue;
+      const img = new Image();
+      img.onload = () => { const b = t.querySelector('.badge'); b.textContent = ''; b.style.background = '#e8eaed'; b.append(img); };
+      img.src = src;
+    }
+  };
   document.getElementById('f').addEventListener('submit', (e) => {
     e.preventDefault();
     const q = e.target.q.value.trim();
