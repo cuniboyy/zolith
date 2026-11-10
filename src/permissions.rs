@@ -8,6 +8,20 @@ use webkit2gtk::{
     UserMediaPermissionRequest, UserMediaPermissionRequestExt,
 };
 
+/// What a page asked for: (key, words for the prompt).
+pub type Items = Vec<(&'static str, &'static str)>;
+
+/// The question on screen: the requests waiting on its answer (a page often asks twice in a
+/// row, and one answer settles all of them).
+pub struct Prompt {
+    site: String,
+    keys: Vec<&'static str>,
+    reqs: Rc<RefCell<Vec<PermissionRequest>>>,
+}
+
+/// Questions that arrived while another was showing.
+pub type Queued = (PermissionRequest, String, Items);
+
 /// (site, permission) -> allowed
 pub type Saved = HashMap<(String, String), bool>;
 
@@ -97,37 +111,69 @@ fn handle(app: &Sh, wv: &webkit2gtk::WebView, req: &PermissionRequest) -> bool {
         req.deny();
         return true;
     };
-    let saved: Vec<Option<bool>> = match app.try_borrow() {
-        Ok(a) => items.iter().map(|i| a.perms.get(&(site.clone(), i.0.to_string())).copied()).collect(),
-        // busy: don't guess, say no
-        Err(_) => { req.deny(); return true }
-    };
-    // any saved "block" wins; everything saved as "allow" lets it through
-    if saved.iter().any(|s| *s == Some(false)) {
-        req.deny();
-        return true;
-    }
-    if saved.iter().all(|s| *s == Some(true)) {
-        req.allow();
-        return true;
-    }
-    ask(app, req.clone(), site, items);
+    decide_or_ask(app, req.clone(), site, items);
     true
 }
 
-/// Close the prompt (if one is showing), refusing the request it was about.
+/// Use a saved answer if there is one, otherwise ask.
+fn decide_or_ask(app: &Sh, req: PermissionRequest, site: String, items: Items) {
+    let saved: Vec<Option<bool>> = match app.try_borrow() {
+        Ok(a) => items.iter().map(|i| a.perms.get(&(site.clone(), i.0.to_string())).copied()).collect(),
+        Err(_) => {
+            // the browser is in the middle of something: try again a moment later, don't refuse
+            let app = app.clone();
+            glib::idle_add_local_once(move || decide_or_ask(&app, req, site, items));
+            return;
+        }
+    };
+    // any saved "block" wins; everything saved as "allow" lets it through
+    if saved.iter().any(|s| *s == Some(false)) {
+        return req.deny();
+    }
+    if saved.iter().all(|s| *s == Some(true)) {
+        return req.allow();
+    }
+    ask(app, req, site, items);
+}
+
+/// Close the prompt (if one is showing) and refuse everything waiting: the page has gone away.
 pub fn dismiss(a: &mut App) {
     a.perm_bubble.hide();
+    for (r, _, _) in a.perm_queue.drain(..) {
+        r.deny();
+    }
     if let Some(cancel) = a.perm_pending.take() {
         cancel();
+    }
+    a.perm_active = None;
+}
+
+/// After an answer: show the next waiting question, if any.
+fn next(app: &Sh) {
+    let queued = app.try_borrow_mut().ok().and_then(|mut a| (!a.perm_queue.is_empty()).then(|| a.perm_queue.remove(0)));
+    if let Some((req, site, items)) = queued {
+        decide_or_ask(app, req, site, items);
     }
 }
 
 /// A bubble under the address bar, like Chrome's: who is asking, what for, and three answers.
 fn ask(app: &Sh, req: PermissionRequest, site: String, items: Vec<(&'static str, &'static str)>) {
-    let Ok(mut a) = app.try_borrow_mut() else { return req.deny() };
-    // one question at a time: an older one still open is refused
-    dismiss(&mut a);
+    let Ok(mut a) = app.try_borrow_mut() else {
+        let app = app.clone();
+        return { glib::idle_add_local_once(move || ask(&app, req, site, items)); };
+    };
+    let keys: Vec<&'static str> = items.iter().map(|i| i.0).collect();
+    if let Some(open) = &a.perm_active {
+        if open.site == site && open.keys == keys {
+            // the same question again: the open prompt's answer settles this one too
+            open.reqs.borrow_mut().push(req);
+        } else {
+            a.perm_queue.push((req, site, items));
+        }
+        return;
+    }
+    let reqs = Rc::new(RefCell::new(vec![req]));
+    a.perm_active = Some(Prompt { site: site.clone(), keys, reqs: reqs.clone() });
     let bubble = a.perm_bubble.clone();
     for c in bubble.children() { bubble.remove(&c) }
     bubble.set_border_width(16);
@@ -156,16 +202,21 @@ fn ask(app: &Sh, req: PermissionRequest, site: String, items: Vec<(&'static str,
     }
 
     // answered once, whichever way: a button, the close button, or the page going away
-    let req = Rc::new(RefCell::new(Some(req)));
     let items = Rc::new(items);
     let answer = {
-        let (app, req, site, items, bubble) = (app.clone(), req.clone(), site.clone(), items.clone(), bubble.clone());
+        let (app, reqs, site, items, bubble) = (app.clone(), reqs.clone(), site.clone(), items.clone(), bubble.clone());
         Rc::new(move |allow: bool, remember: bool| {
-            let Some(r) = req.borrow_mut().take() else { return };
-            if allow { r.allow() } else { r.deny() }
+            let waiting: Vec<PermissionRequest> = reqs.borrow_mut().drain(..).collect();
+            if waiting.is_empty() {
+                return; // already answered
+            }
+            for r in waiting {
+                if allow { r.allow() } else { r.deny() }
+            }
             bubble.hide();
             with(&app, |a| {
                 a.perm_pending = None;
+                a.perm_active = None;
                 if remember && !private() {
                     for i in items.iter() {
                         a.perms.insert((site.clone(), i.0.to_string()), allow);
@@ -173,6 +224,7 @@ fn ask(app: &Sh, req: PermissionRequest, site: String, items: Vec<(&'static str,
                     save(&a.perms);
                 }
             });
+            next(&app);
         })
     };
     let buttons = [("Allow while visiting the site", true, true), ("Allow this time", true, false), ("Don't allow", false, true)];

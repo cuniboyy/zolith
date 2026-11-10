@@ -128,6 +128,8 @@ struct App {
     /// The permission question under the address bar, and how to refuse it if it goes stale.
     perm_bubble: gtk::Box,
     perm_pending: Option<Box<dyn FnOnce()>>,
+    perm_active: Option<permissions::Prompt>,
+    perm_queue: Vec<permissions::Queued>,
     history: Vec<Visit>,
     /// Address bar dropdown: a panel drawn over the page (a popover would swallow editing keys).
     sug_pop: gtk::Box,
@@ -1646,7 +1648,7 @@ fn main() {
         entry: entry.clone(), back: back.clone(), fwd: fwd.clone(), home_btn: home.clone(), reload_img, star_img,
         bm_bar, find_bar, find_entry: find_entry.clone(), status,
         ctx: Rc::new(RefCell::new(WebContext::new(Some(settings::data_dir())))),
-        theme_css: theme_provider.clone(), perms: if private() { Default::default() } else { permissions::load() }, perm_bubble, perm_pending: None, history: suggest::load(), sug_pop, top: top.clone(), sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
+        theme_css: theme_provider.clone(), perms: if private() { Default::default() } else { permissions::load() }, perm_bubble, perm_pending: None, perm_active: None, perm_queue: vec![], history: suggest::load(), sug_pop, top: top.clone(), sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
         last_typed: String::new(), inline_ok: false,
         http: suggest::new_session(),
         dls: vec![], next_dl: 0, dl_pending: false, dl_btn: dl_btn.clone(), dl_list: dl_list.clone(),
