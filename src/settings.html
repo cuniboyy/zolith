@@ -248,6 +248,10 @@
           <svg class="chev" viewBox="0 0 24 24"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
         </div>
         <div class="row">
+          <div class="label">Site permissions<div class="secondary" id="perm-sub">Camera, microphone, location and notifications. Sites ask first, and your answers are remembered.</div></div>
+          <button class="btn" id="reset-perms">Reset all</button>
+        </div>
+        <div class="row">
           <div class="label">Block ads and trackers
             <div class="secondary" id="adblock-desc">Blocks known ad and tracking sites and skips YouTube ads. Applies fully to new tabs.</div>
           </div>
@@ -446,6 +450,10 @@
   window.zolithCleared = (ok) => {
     if (ok) { dlg.close(); } else { $('do-clear').disabled = false; $('do-clear').textContent = 'Try again'; }
   };
+
+  // ---- site permissions ----
+  $('reset-perms').onclick = () => send('reset-permissions');
+  window.zolithPermissions = () => { $('perm-sub').textContent = 'All saved answers were cleared. Sites will ask again.'; };
 
   // ---- default browser ----
   const syncDefault = () => {

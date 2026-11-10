@@ -4,6 +4,7 @@ mod downloads;
 mod filterlists;
 mod lists;
 mod menus;
+mod permissions;
 mod settings;
 mod suggest;
 
@@ -123,6 +124,10 @@ struct App {
     status: gtk::Label,
     ctx: Rc<RefCell<WebContext>>,
     theme_css: gtk::CssProvider,
+    perms: permissions::Saved,
+    /// The permission question under the address bar, and how to refuse it if it goes stale.
+    perm_bubble: gtk::Box,
+    perm_pending: Option<Box<dyn FnOnce()>>,
     history: Vec<Visit>,
     /// Address bar dropdown: a panel drawn over the page (a popover would swallow editing keys).
     sug_pop: gtk::Box,
@@ -405,6 +410,7 @@ impl App {
             if t.id == id { ctx.add_class("selected") } else { ctx.remove_class("selected") }
         }
         self.sug_pop.hide();
+        permissions::dismiss(self);
         self.show_url();
         self.set_status("");
         self.refresh();
@@ -922,6 +928,10 @@ fn handle_ipc(app: &Sh, id: u32, msg: &str) {
         }
         (Internal::Settings, Some("pick-download-dir"), _, _) => pick_download_dir(app, &wv),
         (Internal::Settings, Some("update-lists"), _, _) => lists::refresh(app),
+        (Internal::Settings, Some("reset-permissions"), _, _) => {
+            permissions::reset(app);
+            run_js(&wv, "window.zolithPermissions && zolithPermissions(0)");
+        }
         (Internal::Settings | Internal::Welcome, Some("import-bookmarks"), _, _) => import_bookmarks(app, &wv),
         (Internal::Welcome, Some("welcome-finish"), _, _) => {
             apply_setting(app, "welcome_done", "true");
@@ -1202,6 +1212,8 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
 
     {
         let a = app.clone();
+        permissions::hook(app, &wv);
+        if let Some(c) = wv.context() { c.set_spell_checking_enabled(true) }
         wv.connect_context_menu(move |wv, _menu, event, hit| { menus::page_menu(&a, wv, hit, event); true });
         let a = app.clone();
         wv.connect_uri_notify(move |_| with(&a, |x| x.tab_changed(id, None)));
@@ -1545,6 +1557,13 @@ fn main() {
     let top = gtk::Overlay::new();
     top.add(&content);
     top.add_overlay(&sug_pop);
+    let perm_bubble = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    perm_bubble.set_halign(gtk::Align::Start);
+    perm_bubble.set_valign(gtk::Align::Start);
+    perm_bubble.set_size_request(330, -1);
+    perm_bubble.style_context().add_class("permbubble");
+    perm_bubble.set_no_show_all(true);
+    top.add_overlay(&perm_bubble);
     vbox.pack_start(&top, true, true, 0);
 
     // ---- titlebar: scrollable tab strip + window controls ----
@@ -1627,7 +1646,7 @@ fn main() {
         entry: entry.clone(), back: back.clone(), fwd: fwd.clone(), home_btn: home.clone(), reload_img, star_img,
         bm_bar, find_bar, find_entry: find_entry.clone(), status,
         ctx: Rc::new(RefCell::new(WebContext::new(Some(settings::data_dir())))),
-        theme_css: theme_provider.clone(), history: suggest::load(), sug_pop, top: top.clone(), sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
+        theme_css: theme_provider.clone(), perms: if private() { Default::default() } else { permissions::load() }, perm_bubble, perm_pending: None, history: suggest::load(), sug_pop, top: top.clone(), sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
         last_typed: String::new(), inline_ok: false,
         http: suggest::new_session(),
         dls: vec![], next_dl: 0, dl_pending: false, dl_btn: dl_btn.clone(), dl_list: dl_list.clone(),

@@ -76,3 +76,11 @@ list.suggest .detail { color: #9aa0a6; font-size: 12px; }
 
 .titlebar-box.private { background: #2a1f3d; }
 .private-badge { background: #6b46c1; color: #fbfbfe; border-radius: 10px; padding: 1px 10px; font-size: 11px; margin-right: 6px; }
+
+/* permission question, shaped like Chrome's */
+box.permbubble { background: #292a2d; border: 1px solid #0c0c0d; border-radius: 12px; box-shadow: 0 6px 18px rgba(0,0,0,0.55); color: #e8eaed; }
+.perm-title { font-size: 14px; font-weight: 500; }
+.perm-btn { border-radius: 18px; min-height: 34px; padding: 0 16px; background: transparent; background-image: none;
+  border: 1px solid #5f6368; box-shadow: none; color: #8ab4f8; font-weight: 500; }
+.perm-btn:hover { background: rgba(138,180,248,0.1); }
+.perm-btn:disabled { opacity: 0.5; }

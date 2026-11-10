@@ -58,6 +58,8 @@ No Electron, no Chromium: just GTK and your system's WebKit.
 - Downloads that never overwrite existing files, with a status message
 - Middle-click or `Ctrl`+click opens a link in a background tab
 - Fullscreen video hides the toolbar
+- Sites ask before using your camera, microphone, screen or location, with a Chrome-style prompt under the address bar; answers are remembered per site and can be reset in Settings
+- Spell check in text fields
 - Dark theme, with colour themes to choose from (including an Opera-style red)
 - A first-run setup guide: search engine, theme, bookmark import, default browser
 
