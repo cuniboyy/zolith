@@ -63,3 +63,11 @@ separator.tab-sep { background: #4a4a55; min-width: 1px; margin: 9px 0; }
   background: #2b2a33; color: #fbfbfe; font-size: 12px; padding: 3px 8px;
   border: 1px solid #0c0c0d; border-left: none; border-bottom: none; border-radius: 0 4px 0 0;
 }
+
+popover.suggestpop, popover.suggestpop > .background { background: #2b2a33; border: 1px solid #0c0c0d; border-radius: 8px; box-shadow: 0 6px 16px rgba(0,0,0,0.5); }
+list.suggest { background: transparent; padding: 4px 0; }
+list.suggest row { padding: 7px 14px; color: #fbfbfe; font-size: 13px; }
+list.suggest row:hover { background: rgba(251,251,254,0.07); }
+list.suggest row:selected { background: rgba(0,221,255,0.16); color: #fbfbfe; }
+list.suggest image { color: #9aa0a6; }
+list.suggest .detail { color: #9aa0a6; font-size: 12px; }

@@ -8,6 +8,17 @@ pub const ENGINES: [(&str, &str); 5] = [
     ("Brave", "https://search.brave.com/search?q=%s"),
     ("Startpage", "https://www.startpage.com/sp/search?query=%s"),
 ];
+
+/// Live suggestion endpoints (all answer in OpenSearch JSON). Startpage and custom engines have none.
+pub fn suggest_template(engine: &str) -> Option<&'static str> {
+    Some(match engine {
+        "DuckDuckGo" => "https://duckduckgo.com/ac/?type=list&q=%s",
+        "Google" => "https://suggestqueries.google.com/complete/search?client=firefox&q=%s",
+        "Bing" => "https://api.bing.com/osjson.aspx?query=%s",
+        "Brave" => "https://search.brave.com/api/suggest?q=%s",
+        _ => return None,
+    })
+}
 pub const CUSTOM: &str = "Custom";
 
 pub const ZOOMS: [u32; 9] = [67, 75, 80, 90, 100, 110, 125, 150, 200];
@@ -23,6 +34,8 @@ pub struct Settings {
     pub show_home: bool,
     pub show_bookmarks: bool,
     pub adblock: bool,
+    /// Ask the search engine for suggestions while typing (sends what you type to it).
+    pub suggest: bool,
     /// One of `STARTUPS`.
     pub startup: String,
     /// Opened at startup when `startup` is "page".
@@ -37,7 +50,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             engine: ENGINES[0].0.into(), custom: String::new(), home: String::new(),
-            show_home: true, show_bookmarks: true, adblock: true,
+            show_home: true, show_bookmarks: true, adblock: true, suggest: true,
             startup: STARTUPS[0].into(), startup_page: String::new(), zoom: 100, download_dir: String::new(),
         }
     }
@@ -68,9 +81,14 @@ impl Settings {
             "startup_page" => self.startup_page = v.into(),
             "zoom" => match v.parse() { Ok(z) if ZOOMS.contains(&z) => self.zoom = z, _ => return false },
             "download_dir" if v.is_empty() || v.starts_with('/') => self.download_dir = v.into(),
-            "show_home" | "show_bookmarks" | "adblock" => {
+            "show_home" | "show_bookmarks" | "adblock" | "suggest" => {
                 let Some(b) = flag(v) else { return false };
-                match key { "show_home" => self.show_home = b, "show_bookmarks" => self.show_bookmarks = b, _ => self.adblock = b }
+                match key {
+                    "show_home" => self.show_home = b,
+                    "show_bookmarks" => self.show_bookmarks = b,
+                    "suggest" => self.suggest = b,
+                    _ => self.adblock = b,
+                }
             }
             _ => return false,
         }
@@ -100,7 +118,8 @@ impl Settings {
         vec![
             ("engine", self.engine.clone()), ("custom", self.custom.clone()), ("home", self.home.clone()),
             ("show_home", self.show_home.to_string()), ("show_bookmarks", self.show_bookmarks.to_string()),
-            ("adblock", self.adblock.to_string()), ("startup", self.startup.clone()),
+            ("adblock", self.adblock.to_string()), ("suggest", self.suggest.to_string()),
+            ("startup", self.startup.clone()),
             ("startup_page", self.startup_page.clone()), ("zoom", self.zoom.to_string()),
             ("download_dir", self.download_dir.clone()),
         ]
@@ -139,24 +158,35 @@ impl Settings {
     }
 }
 
+/// True if `input` should be opened as an address rather than searched for.
+pub fn is_address(input: &str) -> bool {
+    let s = input.trim();
+    let host = s.split(['/', '?', '#']).next().unwrap_or("").split(':').next().unwrap_or("");
+    s.contains("://") || s.starts_with("about:") || (!s.contains(' ') && (s.contains('.') || host == "localhost"))
+}
+
+/// Percent-encode text for use inside a URL query value.
+pub fn encode_query(s: &str) -> String {
+    s.bytes().map(|b| match b {
+        b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+        b' ' => "+".into(),
+        _ => format!("%{b:02X}"),
+    }).collect()
+}
+
 /// Turn what the user typed into a URL: pass URLs through, otherwise search with `template`.
 pub fn to_url(input: &str, template: &str) -> String {
     let s = input.trim();
     let host = s.split(['/', '?', '#']).next().unwrap_or("").split(':').next().unwrap_or("");
     let is_local = host == "localhost"
         || (host.contains('.') && host.bytes().all(|b| b.is_ascii_digit() || b == b'.'));
-    if s.contains("://") || s.starts_with("about:") {
+    if !is_address(s) {
+        template.replacen("%s", &encode_query(s), 1)
+    } else if s.contains("://") || s.starts_with("about:") {
         s.to_string()
-    } else if !s.contains(' ') && (s.contains('.') || host == "localhost") {
+    } else {
         // local servers rarely speak https
         format!("{}://{s}", if is_local { "http" } else { "https" })
-    } else {
-        let q: String = s.bytes().map(|b| match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-            b' ' => "+".into(),
-            _ => format!("%{b:02X}"),
-        }).collect();
-        template.replacen("%s", &q, 1)
     }
 }
 
@@ -192,6 +222,8 @@ mod tests {
         assert_eq!(to_url("50% off", ENGINES[1].1), "https://www.google.com/search?q=50%25+off");
         // a query containing "%s" must not be substituted twice
         assert_eq!(to_url("printf %s", t), "https://duckduckgo.com/?q=printf+%25s");
+        assert!(is_address("example.com/a b") == false && is_address("github.com") && is_address("localhost:8080"));
+        assert!(!is_address("how to cook rice") && !is_address("rust") && is_address("about:blank"));
     }
 
     #[test]

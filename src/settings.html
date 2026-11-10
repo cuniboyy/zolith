@@ -164,6 +164,11 @@
           <input type="text" id="custom" placeholder="https://example.com/search?q=%s" spellcheck="false">
           <div class="secondary" id="custom-hint">Use <code>%s</code> where the search words go</div>
         </div>
+        <div class="row">
+          <div class="label">Show search suggestions
+            <div class="secondary" id="suggest-desc">Sends what you type in the address bar to your search engine</div></div>
+          <label class="toggle"><input type="checkbox" id="suggest" aria-label="Show search suggestions"><span class="bar"></span><span class="knob"></span></label>
+        </div>
       </div>
     </section>
 
@@ -206,7 +211,7 @@
       <h2>Privacy and security</h2>
       <div class="card">
         <div class="row clickable" id="open-clear" tabindex="0" role="button">
-          <div class="label">Clear browsing data<div class="secondary">Delete cookies, site data and cache</div></div>
+          <div class="label">Clear browsing data<div class="secondary">Delete history, cookies, site data and cache</div></div>
           <svg class="chev" viewBox="0 0 24 24"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
         </div>
         <div class="row">
@@ -257,6 +262,8 @@
         <option value="all" selected>All time</option>
       </select>
     </div>
+    <label class="check"><input type="checkbox" id="c-history" checked>
+      <div>Browsing history<div class="secondary">Pages suggested in the address bar</div></div></label>
     <label class="check"><input type="checkbox" id="c-cookies" checked>
       <div>Cookies and other site data<div class="secondary">Signs you out of most sites</div></div></label>
     <label class="check"><input type="checkbox" id="c-cache" checked>
@@ -294,10 +301,18 @@
   };
   const syncEngine = () => $('custom-row').classList.toggle('hidden', S.engine !== 'Custom');
   $('custom').value = S.custom;
-  $('engine').onchange = () => { set('engine', $('engine').value); syncEngine(); if (S.engine === 'Custom') $('custom').focus(); };
+  $('engine').onchange = () => { set('engine', $('engine').value); syncEngine(); syncSuggest(); if (S.engine === 'Custom') $('custom').focus(); };
   $('custom').oninput = checkCustom;
   $('custom').onchange = () => set('custom', $('custom').value.trim());
-  syncEngine(); checkCustom();
+  const noLive = ['Startpage', 'Custom'];
+  const syncSuggest = () => {
+    $('suggest-desc').textContent = noLive.includes(S.engine)
+      ? 'Not available for this search engine. Pages from your history and bookmarks still appear.'
+      : 'Sends what you type in the address bar to your search engine';
+  };
+  $('suggest').checked = S.suggest === 'true';
+  $('suggest').onchange = () => set('suggest', $('suggest').checked);
+  syncEngine(); checkCustom(); syncSuggest();
 
   // ---- startup ----
   const syncStartup = () => $('startup-row').classList.toggle('hidden', S.startup !== 'page');
@@ -341,10 +356,10 @@
   $('open-clear').onclick = () => { $('do-clear').disabled = false; $('do-clear').textContent = 'Clear data'; dlg.showModal(); };
   $('open-clear').onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('open-clear').click(); } };
   $('cancel-clear').onclick = () => dlg.close();
-  const syncClearBtn = () => { $('do-clear').disabled = !$('c-cookies').checked && !$('c-cache').checked; };
-  $('c-cookies').onchange = syncClearBtn; $('c-cache').onchange = syncClearBtn;
+  const syncClearBtn = () => { $('do-clear').disabled = !['c-history', 'c-cookies', 'c-cache'].some((i) => $(i).checked); };
+  for (const i of ['c-history', 'c-cookies', 'c-cache']) $(i).onchange = syncClearBtn;
   $('do-clear').onclick = () => {
-    const kinds = [$('c-cookies').checked && 'cookies', $('c-cache').checked && 'cache'].filter(Boolean).join(',');
+    const kinds = [$('c-history').checked && 'history', $('c-cookies').checked && 'cookies', $('c-cache').checked && 'cache'].filter(Boolean).join(',');
     $('do-clear').disabled = true; $('do-clear').textContent = 'Clearing…';
     send('clear', kinds, $('range').value);
   };

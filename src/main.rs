@@ -1,8 +1,10 @@
 mod adblock;
 mod settings;
+mod suggest;
 
 use gtk::{cairo, gdk, gdk_pixbuf, gio, glib, glib::Propagation, pango, prelude::*};
-use settings::{quote, to_url, Settings};
+use settings::{is_address, quote, to_url, Settings};
+use suggest::{Kind, Row, Visit};
 use std::{
     cell::{Cell, RefCell},
     ffi::OsStr,
@@ -46,7 +48,7 @@ const DRAG_W: i32 = 48;
 enum Cmd {
     NewTab, CloseTab, Reopen, Reload, Back, Forward, Home, FocusUrl, Escape,
     Find, FindNext(bool), FindTyped, CloseFind, Zoom(i8), Print, Devtools, Bookmark,
-    ToggleBookmarksBar, NextTab(i32), NthTab(usize), Settings, Quit,
+    ToggleBookmarksBar, NextTab(i32), NthTab(usize), SuggestMove(i32), EnterUrl, Settings, Quit,
 }
 
 struct Tab {
@@ -95,6 +97,14 @@ struct App {
     find_entry: gtk::Entry,
     status: gtk::Label,
     ctx: Rc<RefCell<WebContext>>,
+    history: Vec<Visit>,
+    /// Address bar dropdown.
+    sug_pop: gtk::Popover,
+    sug_list: gtk::ListBox,
+    sug_rows: Vec<Row>,
+    /// Bumped on every keystroke so slow suggestion replies for old text are ignored.
+    sug_seq: u32,
+    http: soup::Session,
 }
 
 type Sh = Rc<RefCell<App>>;
@@ -263,6 +273,7 @@ impl App {
             let ctx = t.head.style_context();
             if t.id == id { ctx.add_class("selected") } else { ctx.remove_class("selected") }
         }
+        self.sug_pop.hide();
         self.show_url();
         self.set_status("");
         self.refresh();
@@ -319,11 +330,16 @@ impl App {
         if url_changed {
             set_favicon(t);
         }
+        let visited = (loading == Some(false)).then(|| (t.url.clone(), t.title.clone()));
         if id == self.cur {
             self.refresh();
         }
         if url_changed {
             self.save_session();
+        }
+        if let Some((url, title)) = visited.filter(|(u, _)| suggest::recordable(u)) {
+            suggest::record(&mut self.history, &url, &title, suggest::now());
+            suggest::save(&self.history);
         }
     }
 
@@ -333,8 +349,13 @@ impl App {
         let shown = if title.is_empty() { if t.url.is_empty() { "New Tab" } else { &t.url } } else { title };
         t.label.set_text(shown);
         t.head.set_tooltip_text(Some(shown));
+        let (url, titled) = (t.url.clone(), !title.is_empty());
         if id == self.cur {
             self.refresh();
+        }
+        if titled && suggest::recordable(&url) {
+            suggest::set_title(&mut self.history, &url, title);
+            suggest::save(&self.history);
         }
     }
 }
@@ -440,6 +461,11 @@ fn run(app: &Sh, c: Cmd) {
         }
         Cmd::Quit => std::process::exit(0),
         Cmd::Settings => open_settings(app),
+        Cmd::SuggestMove(d) => suggest_move(app, d),
+        Cmd::EnterUrl => {
+            let typed = app.try_borrow().map(|a| a.entry.text().to_string());
+            if let Ok(t) = typed { suggest_enter(app, &t) }
+        }
         Cmd::Bookmark => toggle_bookmark(app),
         Cmd::ToggleBookmarksBar => {
             let v = app.try_borrow().map(|a| !a.settings.show_bookmarks);
@@ -501,9 +527,14 @@ fn run(app: &Sh, c: Cmd) {
                     wv.grab_focus();
                 }
                 Cmd::Escape => {
-                    // leave the URL bar: put the real address back
-                    with(app, |a| a.show_url());
-                    focus_current(app);
+                    // first Escape closes the suggestions, the next leaves the address bar
+                    let open = app.try_borrow().map(|a| a.sug_pop.is_visible()).unwrap_or(false);
+                    if open {
+                        with(app, |a| a.sug_pop.hide());
+                    } else {
+                        with(app, |a| a.show_url());
+                        focus_current(app);
+                    }
                 }
                 _ => {}
             }
@@ -518,6 +549,7 @@ fn load_home_newtab(app: &Sh, wv: &webkit2gtk::WebView) {
 
 fn go(app: &Sh, input: &str) {
     if input.trim().is_empty() { return }
+    with(app, |a| { a.sug_seq += 1; a.sug_pop.hide() });
     let Some(wv) = cur_wv(app) else { return };
     if is_settings_url(input) {
         load_settings_page(app, &wv);
@@ -526,6 +558,118 @@ fn go(app: &Sh, input: &str) {
     let Ok(template) = app.try_borrow().map(|a| a.settings.search_template().to_string()) else { return };
     wv.load_uri(&to_url(input, &template));
     wv.grab_focus();
+}
+
+fn kind_icon(k: Kind) -> &'static str {
+    match k {
+        Kind::Go => "web-browser-symbolic",
+        Kind::Search => "system-search-symbolic",
+        Kind::History => "document-open-recent-symbolic",
+        Kind::Bookmark => "starred-symbolic",
+    }
+}
+
+fn hide_suggestions(app: &Sh) {
+    with(app, |a| { a.sug_seq += 1; a.sug_pop.hide() });
+}
+
+/// The user typed in the address bar: show matching bookmarks/history now, and ask the
+/// search engine for more shortly after (if the user allows it).
+fn suggest_typed(app: &Sh, typed: &str) {
+    let text = typed.trim().to_string();
+    if text.is_empty() {
+        return hide_suggestions(app);
+    }
+    let Ok(mut a) = app.try_borrow_mut() else { return };
+    a.sug_seq += 1;
+    let (seq, engine, ask) = (a.sug_seq, a.settings.engine.clone(), a.settings.suggest && !is_address(&text));
+    drop(a);
+    suggest_render(app, &text, &[]);
+    if ask && settings::suggest_template(&engine).is_some() {
+        let app = app.clone();
+        // wait for a pause in typing so one query goes out per word, not per key
+        glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+            let Ok(a) = app.try_borrow() else { return };
+            if a.sug_seq != seq { return }
+            let http = a.http.clone();
+            drop(a);
+            let app2 = app.clone();
+            let text2 = text.clone();
+            suggest::fetch(&http, &engine, &text, move |list| {
+                let current = app2.try_borrow().map(|a| a.sug_seq == seq && a.entry.has_focus()).unwrap_or(false);
+                if current && !list.is_empty() { suggest_render(&app2, &text2, &list) }
+            });
+        });
+    }
+}
+
+/// Build and show the dropdown: the typed text first, then bookmarks/history, then the
+/// search engine's suggestions.
+fn suggest_render(app: &Sh, text: &str, online: &[String]) {
+    let Ok(mut a) = app.try_borrow_mut() else { return };
+    if !a.entry.has_focus() {
+        return;
+    }
+    let template = a.settings.search_template().to_string();
+    let mut rows = vec![if is_address(text) {
+        Row { kind: Kind::Go, text: text.into(), detail: String::new(), url: text.into() }
+    } else {
+        Row {
+            kind: Kind::Search, text: text.into(), detail: format!("Search with {}", a.settings.engine),
+            url: to_url(text, &template),
+        }
+    }];
+    for r in suggest::find(&a.history, &a.marks, text, suggest::now(), 5) {
+        if r.url != rows[0].url { rows.push(r) }
+    }
+    let typed = text.to_lowercase();
+    for s in online.iter().filter(|s| s.to_lowercase() != typed).take(5) {
+        rows.push(Row { kind: Kind::Search, text: s.clone(), detail: String::new(), url: to_url(s, &template) });
+    }
+    for c in a.sug_list.children() { a.sug_list.remove(&c) }
+    for r in &rows {
+        let bx = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        bx.pack_start(&gtk::Image::from_icon_name(Some(kind_icon(r.kind)), gtk::IconSize::Menu), false, false, 0);
+        let main = gtk::Label::new(Some(&r.text));
+        main.set_xalign(0.0);
+        main.set_ellipsize(pango::EllipsizeMode::End);
+        bx.pack_start(&main, false, true, 0);
+        if !r.detail.is_empty() {
+            let d = gtk::Label::new(Some(&r.detail));
+            d.set_xalign(0.0);
+            d.set_ellipsize(pango::EllipsizeMode::End);
+            d.style_context().add_class("detail");
+            bx.pack_start(&d, true, true, 0);
+        }
+        let row = gtk::ListBoxRow::new();
+        row.set_can_focus(false);
+        row.add(&bx);
+        a.sug_list.add(&row);
+    }
+    a.sug_list.show_all();
+    a.sug_rows = rows;
+    a.sug_list.set_size_request(a.entry.allocated_width(), -1);
+    a.sug_list.select_row(a.sug_list.row_at_index(0).as_ref());
+    a.sug_pop.popup();
+}
+
+/// Up/Down in the address bar move through the dropdown.
+fn suggest_move(app: &Sh, d: i32) {
+    let Ok(a) = app.try_borrow() else { return };
+    let n = a.sug_rows.len() as i32;
+    if n == 0 { return }
+    let at = a.sug_list.selected_row().map_or(-1, |r| r.index());
+    let to = (at + d).rem_euclid(n);
+    a.sug_list.select_row(a.sug_list.row_at_index(to).as_ref());
+}
+
+/// Enter in the address bar: open the highlighted suggestion, or what was typed.
+fn suggest_enter(app: &Sh, typed: &str) {
+    let pick = app.try_borrow().ok().and_then(|a| {
+        if !a.sug_pop.is_visible() { return None }
+        a.sug_list.selected_row().and_then(|r| a.sug_rows.get(r.index() as usize).map(|x| x.url.clone()))
+    });
+    go(app, &pick.unwrap_or_else(|| typed.to_string()));
 }
 
 /// Change one setting, save it, and update everything that depends on it.
@@ -566,10 +710,28 @@ fn handle_ipc(app: &Sh, id: u32, msg: &str) {
     match (parts.next(), parts.next(), parts.next()) {
         // the download folder only changes through the folder picker below
         (Some("set"), Some(k), Some(v)) if k != "download_dir" => apply_setting(app, k, v),
-        (Some("clear"), Some(kinds), Some(range)) => clear_data(&wv, kinds, range),
+        (Some("clear"), Some(kinds), Some(range)) => {
+            let (history, rest): (Vec<&str>, Vec<&str>) = kinds.split(',').partition(|k| *k == "history");
+            if !history.is_empty() {
+                with(app, |a| {
+                    suggest::clear(&mut a.history, range_secs(range), suggest::now());
+                    suggest::save(&a.history);
+                });
+            }
+            if rest.is_empty() {
+                run_js(&wv, "window.zolithCleared && zolithCleared(true)");
+            } else {
+                clear_data(&wv, &rest.join(","), range);
+            }
+        }
         (Some("pick-download-dir"), _, _) => pick_download_dir(app, &wv),
         _ => {}
     }
+}
+
+/// Length of a "time range" choice in seconds; 0 means all time.
+fn range_secs(range: &str) -> u64 {
+    match range { "hour" => 3600, "day" => 86_400, "week" => 604_800, "month" => 2_419_200, _ => 0 }
 }
 
 fn clear_data(wv: &webkit2gtk::WebView, kinds: &str, range: &str) {
@@ -588,7 +750,7 @@ fn clear_data(wv: &webkit2gtk::WebView, kinds: &str, range: &str) {
     if types.is_empty() {
         return;
     }
-    let secs = match range { "hour" => 3600, "day" => 86_400, "week" => 604_800, "month" => 2_419_200, _ => 0 };
+    let secs = range_secs(range) as i64;
     // the callback must be Send; it still runs on this (the main) thread
     let page = glib::thread_guard::ThreadGuard::new(wv.clone());
     manager.clear(types, glib::TimeSpan::from_seconds(secs), None::<&gio::Cancellable>, move |r| {
@@ -922,6 +1084,17 @@ fn main() {
     let entry = gtk::Entry::new();
     entry.set_placeholder_text(Some("Search or enter address"));
     entry.style_context().add_class("urlbar");
+    let sug_list = gtk::ListBox::new();
+    sug_list.set_can_focus(false);
+    sug_list.set_selection_mode(gtk::SelectionMode::Single);
+    sug_list.set_activate_on_single_click(true);
+    let sug_pop = gtk::Popover::new(Some(&entry));
+    // non-modal: the address bar keeps keyboard focus while the list is open
+    sug_pop.set_modal(false);
+    sug_pop.set_position(gtk::PositionType::Bottom);
+    sug_pop.style_context().add_class("suggestpop");
+    sug_pop.add(&sug_list);
+    sug_list.style_context().add_class("suggest");
     let menu_btn = gtk::MenuButton::new();
     menu_btn.add(&gtk::Image::from_icon_name(Some("open-menu-symbolic"), gtk::IconSize::Menu));
     menu_btn.set_relief(gtk::ReliefStyle::None);
@@ -1045,6 +1218,8 @@ fn main() {
         entry: entry.clone(), back: back.clone(), fwd: fwd.clone(), home_btn: home.clone(), reload_img, star_img,
         bm_bar, find_bar, find_entry: find_entry.clone(), status,
         ctx: Rc::new(RefCell::new(WebContext::new(Some(settings::data_dir())))),
+        history: suggest::load(), sug_pop, sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
+        http: suggest::new_session(),
     }));
 
     // ---- wiring ----
@@ -1073,7 +1248,20 @@ fn main() {
     bind(&back, Cmd::Back); bind(&fwd, Cmd::Forward); bind(&reload, Cmd::Reload); bind(&home, Cmd::Home);
     bind(&star, Cmd::Bookmark); bind(&plus, Cmd::NewTab);
     bind(&fprev, Cmd::FindNext(true)); bind(&fnext, Cmd::FindNext(false)); bind(&fclose, Cmd::CloseFind);
-    { let a = app.clone(); entry.connect_activate(move |e| go(&a, &e.text())); }
+    {
+        // only user typing opens suggestions: programmatic updates happen while the App is borrowed
+        let a = app.clone();
+        entry.connect_changed(move |e| {
+            if e.has_focus() && a.try_borrow().is_ok() { suggest_typed(&a, &e.text()) }
+        });
+        let a = app.clone();
+        entry.connect_focus_out_event(move |_, _| { hide_suggestions(&a); Propagation::Proceed });
+        let a = app.clone();
+        sug_list.connect_row_activated(move |_, row| {
+            let url = a.try_borrow().ok().and_then(|x| x.sug_rows.get(row.index() as usize).map(|r| r.url.clone()));
+            if let Some(u) = url { go(&a, &u) }
+        });
+    }
     { let a = app.clone(); find_entry.connect_activate(move |_| run(&a, Cmd::FindNext(false))); }
     { let a = app.clone(); find_entry.connect_changed(move |_| run(&a, Cmd::FindTyped)); }
     for (label, c) in [
@@ -1133,13 +1321,18 @@ fn main() {
                     _ => None,
                 }
             } else if !ctrl && !alt {
-                let (finding, in_url) = a.try_borrow()
-                    .map(|x| (x.find_bar.is_visible(), x.entry.has_focus())).unwrap_or((false, false));
+                let (finding, in_url, dropdown) = a.try_borrow()
+                    .map(|x| (x.find_bar.is_visible(), x.entry.has_focus(), x.sug_pop.is_visible()))
+                    .unwrap_or((false, false, false));
                 match key {
                     k::F5 => Some(Cmd::Reload),
                     k::F3 => Some(Cmd::FindNext(shift)),
                     k::F6 => Some(Cmd::FocusUrl),
                     k::F12 => Some(Cmd::Devtools),
+                    // handled here because the open dropdown swallows Enter before the entry sees it
+                    k::Return | k::KP_Enter if in_url => Some(Cmd::EnterUrl),
+                    k::Down if in_url && dropdown => Some(Cmd::SuggestMove(1)),
+                    k::Up if in_url && dropdown => Some(Cmd::SuggestMove(-1)),
                     k::Escape if finding => Some(Cmd::CloseFind),
                     k::Escape if in_url => Some(Cmd::Escape),
                     _ => None,
