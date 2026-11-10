@@ -1090,6 +1090,16 @@ fn icon_button(icon: &str) -> (gtk::Button, gtk::Image) {
 }
 
 fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("-V" | "--version") => return println!("zolith {}", env!("CARGO_PKG_VERSION")),
+        Some("-h" | "--help") => {
+            return println!(
+                "zolith {}\nA fast, minimal web browser.\n\nUSAGE:\n    zolith [URL]\n\nOPTIONS:\n    -h, --help       Show this help\n    -V, --version    Show the version\n\nSettings: open zolith://settings (Ctrl+,)",
+                env!("CARGO_PKG_VERSION")
+            )
+        }
+        _ => {}
+    }
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title("Zolith")

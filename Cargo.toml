@@ -3,9 +3,19 @@ name = "zolith"
 version = "0.1.0"
 edition = "2024"
 
+description = "A fast, minimal web browser for Linux, built with Rust, GTK and WebKit"
+repository = "https://github.com/ash262049-png/zolith"
+readme = "README.md"
+keywords = ["browser", "webkit", "gtk"]
+categories = ["gui"]
+
 [dependencies]
 gtk = "0.18"
 soup3 = "0.5"
 tao = "0.37.2"
 webkit2gtk = { version = "2.0.2", features = ["v2_40"] }
 wry = { version = "0.57.2", features = ["devtools"] }
+
+[profile.release]
+strip = true
+lto = "thin"
