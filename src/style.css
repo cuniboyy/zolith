@@ -76,3 +76,9 @@ list.suggest .detail { color: #9aa0a6; font-size: 12px; }
 
 .titlebar-box.private { background: #2a1f3d; }
 .private-badge { background: #6b46c1; color: #fbfbfe; border-radius: 10px; padding: 1px 10px; font-size: 11px; margin-right: 6px; }
+
+/* vertical tabs */
+.sidebar { background: #1c1b22; padding: 8px 6px 6px 8px; }
+.vtab { border-radius: 8px; margin: 1px 0; min-height: 34px; }
+.vtab.selected { background: #2b2a33; box-shadow: inset 3px 0 0 #00ddff; }
+.sidebar .newtab-btn { margin: 4px 0 0 0; }
