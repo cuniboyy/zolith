@@ -114,6 +114,11 @@ pub fn record(v: &mut Vec<Visit>, url: &str, title: &str, now: u64) {
     }
 }
 
+/// Remove one page from history.
+pub fn delete(v: &mut Vec<Visit>, url: &str) {
+    v.retain(|e| e.url != url);
+}
+
 /// Update the stored title of the page at `url` once it is known.
 pub fn set_title(v: &mut [Visit], url: &str, title: &str) {
     let url = url.split('#').next().unwrap_or(url);
@@ -367,6 +372,15 @@ mod tests {
         for _ in 0..30 { record(&mut h, "https://popular.example/", "", 1000); }
         assert!(h.len() <= MAX_HISTORY);
         assert!(h.iter().any(|e| e.url == "https://popular.example/"));
+    }
+
+    #[test]
+    fn deleting_one_page() {
+        let mut h = vec![v("https://a.example/", "A", 1, 5), v("https://b.example/", "B", 1, 6)];
+        delete(&mut h, "https://a.example/");
+        delete(&mut h, "https://never.example/");
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].url, "https://b.example/");
     }
 
     #[test]

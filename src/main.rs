@@ -32,8 +32,10 @@ use wry::{NewWindowResponse, WebContext, WebViewBuilder, WebViewBuilderExtUnix, 
 const CSS: &str = include_str!("style.css");
 const NEWTAB: &str = include_str!("newtab.html");
 const SETTINGS: &str = include_str!("settings.html");
+const HISTORY_PAGE: &str = include_str!("history.html");
 /// The settings page is loaded under this address; only it may send IPC messages.
 const SETTINGS_URI: &str = "zolith://settings/";
+const HISTORY_URI: &str = "zolith://history/";
 
 /// Tab width limits, like Chrome: tabs share the strip evenly between these.
 const TAB_MAX: i32 = 240;
@@ -52,7 +54,7 @@ const DRAG_W: i32 = 48;
 enum Cmd {
     NewTab, CloseTab, Reopen, Reload, Back, Forward, Home, FocusUrl, Escape,
     Find, FindNext(bool), FindTyped, CloseFind, Zoom(i8), Print, Devtools, Bookmark,
-    ToggleBookmarksBar, NextTab(i32), NthTab(usize), SuggestMove(i32), EnterUrl, Settings, Quit,
+    ToggleBookmarksBar, NextTab(i32), NthTab(usize), SuggestMove(i32), EnterUrl, Settings, History, Quit,
 }
 
 struct Tab {
@@ -142,11 +144,35 @@ fn run_js(wv: &webkit2gtk::WebView, js: &str) {
     wv.evaluate_javascript(js, None, None, None::<&gio::Cancellable>, |_| {});
 }
 
-fn is_settings_url(u: &str) -> bool {
+/// Pages Zolith draws itself. Only they may talk to the browser.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Internal {
+    Settings,
+    History,
+}
+
+impl Internal {
+    fn uri(self) -> &'static str {
+        match self { Internal::Settings => SETTINGS_URI, Internal::History => HISTORY_URI }
+    }
+    fn shown(self) -> &'static str {
+        match self { Internal::Settings => "zolith://settings", Internal::History => "zolith://history" }
+    }
+    fn icon(self) -> &'static str {
+        match self { Internal::Settings => "emblem-system-symbolic", Internal::History => "document-open-recent-symbolic" }
+    }
+}
+
+/// Which internal page an address is (several spellings work), if any.
+fn internal(u: &str) -> Option<Internal> {
     let u = u.trim().to_ascii_lowercase();
-    ["zolith://settings", "about:settings", "chrome://settings"]
-        .iter()
-        .any(|p| u.strip_prefix(p).is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '#', '?'])))
+    [
+        ("zolith://settings", Internal::Settings), ("about:settings", Internal::Settings), ("chrome://settings", Internal::Settings),
+        ("zolith://history", Internal::History), ("about:history", Internal::History), ("chrome://history", Internal::History),
+    ]
+    .into_iter()
+    .find(|(p, _)| u.strip_prefix(p).is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '#', '?'])))
+    .map(|(_, page)| page)
 }
 
 fn newtab_html(s: &Settings) -> String {
@@ -164,9 +190,19 @@ fn settings_html(s: &Settings) -> String {
         .replace("__VERSION__", env!("CARGO_PKG_VERSION"))
 }
 
-fn load_settings_page(app: &Sh, wv: &webkit2gtk::WebView) {
-    let Ok(s) = app.try_borrow().map(|a| a.settings.clone()) else { return };
-    wv.load_html(&settings_html(&s), Some(SETTINGS_URI));
+fn history_html(history: &[Visit]) -> String {
+    let mut v: Vec<&Visit> = history.iter().collect();
+    v.sort_by_key(|e| std::cmp::Reverse(e.last));
+    let items: Vec<String> = v.iter().map(|e| format!("[{},{},{}]", quote(&e.url), quote(&e.title), e.last)).collect();
+    HISTORY_PAGE.replace("__HISTORY__", &format!("[{}]", items.join(",")))
+}
+
+/// Draw an internal page into a tab from the current settings and history.
+fn load_internal(app: &Sh, wv: &webkit2gtk::WebView, page: Internal) {
+    let Ok((s, h)) = app.try_borrow().map(|a| (a.settings.clone(), if page == Internal::History { a.history.clone() } else { vec![] }))
+        else { return };
+    let html = match page { Internal::Settings => settings_html(&s), Internal::History => history_html(&h) };
+    wv.load_html(&html, Some(page.uri()));
 }
 
 fn marks_path() -> PathBuf {
@@ -220,7 +256,10 @@ impl App {
     fn show_url(&self) {
         let Some(t) = self.cur_tab() else { return };
         let u = &t.url;
-        let shown = if is_settings_url(u) { "zolith://settings" } else { u.strip_prefix("https://").unwrap_or(u) };
+        let shown: &str = match internal(u) {
+            Some(p) => p.shown(),
+            None => u.strip_prefix("https://").unwrap_or(u),
+        };
         self.entry.set_text(shown);
     }
 
@@ -268,7 +307,7 @@ impl App {
         let icon = if t.url.starts_with("https://") { Some("channel-secure-symbolic") }
             else if t.url.starts_with("http://") { Some("channel-insecure-symbolic") }
             else if t.url.is_empty() { Some("system-search-symbolic") }
-            else if is_settings_url(&t.url) { Some("emblem-system-symbolic") } else { None };
+            else if let Some(p) = internal(&t.url) { Some(p.icon()) } else { None };
         self.entry.set_icon_from_icon_name(gtk::EntryIconPosition::Primary, icon);
         let p = t.wv.estimated_load_progress();
         self.entry.set_progress_fraction(if t.loading && p < 1.0 { p.max(0.1) } else { 0.0 });
@@ -407,7 +446,7 @@ fn set_favicon(t: &Tab) {
     match pixbuf.and_then(|p| p.scale_simple(16, 16, gdk_pixbuf::InterpType::Bilinear)) {
         Some(p) => t.icon.set_from_pixbuf(Some(&p)),
         None => {
-            let name = if is_settings_url(&t.url) { "emblem-system-symbolic" } else { "web-browser-symbolic" };
+            let name = internal(&t.url).map_or("web-browser-symbolic", Internal::icon);
             t.icon.set_from_icon_name(Some(name), gtk::IconSize::Menu);
         }
     }
@@ -449,8 +488,8 @@ fn load_home(app: &Sh, wv: &webkit2gtk::WebView) {
     let Ok(s) = app.try_borrow().map(|a| a.settings.clone()) else { return };
     if s.home.trim().is_empty() {
         wv.load_html(&newtab_html(&s), None);
-    } else if is_settings_url(&s.home) {
-        wv.load_html(&settings_html(&s), Some(SETTINGS_URI));
+    } else if let Some(p) = internal(&s.home) {
+        load_internal(app, wv, p);
     } else {
         wv.load_uri(&to_url(&s.home, s.search_template()));
     }
@@ -468,11 +507,20 @@ fn find(app: &Sh, wv: &webkit2gtk::WebView, c: Cmd) {
     }
 }
 
-fn open_settings(app: &Sh) {
-    let existing = app.try_borrow().ok().and_then(|a| a.tabs.iter().find(|t| is_settings_url(&t.url)).map(|t| t.id));
+/// Open an internal page, reusing its tab if it is already open.
+fn open_internal(app: &Sh, page: Internal) {
+    let existing = app.try_borrow().ok().and_then(|a| a.tabs.iter().find(|t| internal(&t.url) == Some(page)).map(|t| t.id));
     match existing {
-        Some(id) => select_tab(app, id),
-        None => { new_tab(app, Some(SETTINGS_URI.into()), true); }
+        Some(id) => {
+            // a fresh look: history changes while you browse
+            if page == Internal::History {
+                if let Some(wv) = app.try_borrow().ok().and_then(|a| a.tabs.iter().find(|t| t.id == id).map(|t| t.wv.clone())) {
+                    load_internal(app, &wv, page);
+                }
+            }
+            select_tab(app, id)
+        }
+        None => { new_tab(app, Some(page.uri().into()), true); }
     }
 }
 
@@ -488,7 +536,8 @@ fn run(app: &Sh, c: Cmd) {
             if let Ok(id) = id { close_tab(app, id) }
         }
         Cmd::Quit => std::process::exit(0),
-        Cmd::Settings => open_settings(app),
+        Cmd::Settings => open_internal(app, Internal::Settings),
+        Cmd::History => open_internal(app, Internal::History),
         Cmd::SuggestMove(d) => suggest_move(app, d),
         Cmd::EnterUrl => {
             let typed = app.try_borrow().map(|a| a.entry.text().to_string());
@@ -532,8 +581,8 @@ fn run(app: &Sh, c: Cmd) {
                     let url = app.try_borrow().ok().and_then(|a| a.cur_tab().map(|t| t.url.clone()));
                     match url.as_deref() {
                         Some("") => load_home_newtab(app, &wv),
-                        Some(u) if is_settings_url(u) => load_settings_page(app, &wv),
-                        _ => wv.reload(),
+                        Some(u) => match internal(u) { Some(p) => load_internal(app, &wv, p), None => wv.reload() },
+                        None => wv.reload(),
                     }
                 }
                 Cmd::Home => load_home(app, &wv),
@@ -579,8 +628,8 @@ fn go(app: &Sh, input: &str) {
     if input.trim().is_empty() { return }
     with(app, |a| { a.sug_seq += 1; a.sug_pop.hide() });
     let Some(wv) = cur_wv(app) else { return };
-    if is_settings_url(input) {
-        load_settings_page(app, &wv);
+    if let Some(p) = internal(input) {
+        load_internal(app, &wv, p);
         return;
     }
     let Ok(template) = app.try_borrow().map(|a| a.settings.search_template().to_string()) else { return };
@@ -763,17 +812,18 @@ fn apply_setting(app: &Sh, key: &str, value: &str) {
     }
 }
 
-/// Messages from the settings page: "set\nkey\nvalue", "clear\nkinds\nrange", "pick-download-dir".
+/// Messages from our own pages. Settings: "set\nkey\nvalue", "clear\nkinds\nrange",
+/// "pick-download-dir". History: "history-delete\nurl", "history-clear".
 fn handle_ipc(app: &Sh, id: u32, msg: &str) {
-    // re-check the sender is still the settings page now that we're on the main loop
-    let Some(wv) = app.try_borrow().ok().and_then(|a| {
-        a.tabs.iter().find(|t| t.id == id).filter(|t| is_settings_url(&t.url)).map(|t| t.wv.clone())
+    // re-check who sent it now that we're on the main loop, and let each page only do its own jobs
+    let Some((wv, page)) = app.try_borrow().ok().and_then(|a| {
+        a.tabs.iter().find(|t| t.id == id).and_then(|t| internal(&t.url).map(|p| (t.wv.clone(), p)))
     }) else { return };
     let mut parts = msg.splitn(3, '\n');
-    match (parts.next(), parts.next(), parts.next()) {
+    match (page, parts.next(), parts.next(), parts.next()) {
         // the download folder only changes through the folder picker below
-        (Some("set"), Some(k), Some(v)) if k != "download_dir" => apply_setting(app, k, v),
-        (Some("clear"), Some(kinds), Some(range)) => {
+        (Internal::Settings, Some("set"), Some(k), Some(v)) if k != "download_dir" => apply_setting(app, k, v),
+        (Internal::Settings, Some("clear"), Some(kinds), Some(range)) => {
             let (history, rest): (Vec<&str>, Vec<&str>) = kinds.split(',').partition(|k| *k == "history");
             if !history.is_empty() {
                 with(app, |a| {
@@ -787,7 +837,15 @@ fn handle_ipc(app: &Sh, id: u32, msg: &str) {
                 clear_data(&wv, &rest.join(","), range);
             }
         }
-        (Some("pick-download-dir"), _, _) => pick_download_dir(app, &wv),
+        (Internal::Settings, Some("pick-download-dir"), _, _) => pick_download_dir(app, &wv),
+        (Internal::History, Some("history-delete"), Some(url), _) => with(app, |a| {
+            suggest::delete(&mut a.history, url);
+            suggest::save(&a.history);
+        }),
+        (Internal::History, Some("history-clear"), _, _) => with(app, |a| {
+            suggest::clear(&mut a.history, 0, suggest::now());
+            suggest::save(&a.history);
+        }),
         _ => {}
     }
 }
@@ -915,7 +973,8 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
         a.downloads_hooked = true;
         (a.next_id, a.stack.clone(), a.tabs_box.clone(), a.ctx.clone(), a.settings.clone(), first, a.find_entry.clone())
     };
-    let is_settings = url.as_deref().is_some_and(is_settings_url);
+    let internal_page = url.as_deref().and_then(internal);
+    let is_internal = internal_page.is_some();
     let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
     stack.add_named(&page, &id.to_string());
     page.show();
@@ -934,7 +993,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
         })
         .with_ipc_handler(move |req| {
             // wry gives every page window.ipc; only our own settings page may use it
-            if !is_settings_url(&req.uri().to_string()) {
+            if internal(&req.uri().to_string()).is_none() {
                 return;
             }
             let (a, msg) = (a3.clone(), req.into_body());
@@ -958,7 +1017,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
             });
     }
     b = match &url {
-        Some(_) if is_settings => b,
+        Some(_) if is_internal => b,
         Some(u) => b.with_url(u),
         None => b.with_html(newtab_html(&s)),
     };
@@ -975,8 +1034,8 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
             }
         }
     }
-    if is_settings {
-        wv.load_html(&settings_html(&s), Some(SETTINGS_URI));
+    if let Some(p) = internal_page {
+        load_internal(app, &wv, p);
     }
 
     {
@@ -1118,15 +1177,15 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     head.set_size_request(TAB_MAX, -1);
     tabs_box.pack_start(&head, false, false, 0);
 
-    let start_url = match &url {
-        Some(_) if is_settings => SETTINGS_URI.to_string(),
-        Some(u) => u.clone(),
-        None => String::new(),
+    let start_url = match (&url, internal_page) {
+        (Some(_), Some(p)) => p.uri().to_string(),
+        (Some(u), None) => u.clone(),
+        (None, _) => String::new(),
     };
     let tab = Tab {
         id, page, head, label, icon, spinner, close, sep, pinned: false, _view: view, wv,
         // show the address right away instead of waiting for the first load event
-        loading: !start_url.is_empty() && !is_settings,
+        loading: !start_url.is_empty() && !is_internal,
         url: start_url,
         title: String::new(),
     };
@@ -1134,7 +1193,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     {
         let Ok(mut a) = app.try_borrow_mut() else { return Some(id) };
         a.tabs.push(tab);
-        if let Some(u) = url.as_deref().filter(|_| !select && !is_settings) {
+        if let Some(u) = url.as_deref().filter(|_| !select && !is_internal) {
             a.set_title(id, u);
         }
         if select {
@@ -1194,8 +1253,8 @@ fn main() {
     let (reload, reload_img) = icon_button("view-refresh-symbolic");
     let (home, _) = icon_button("go-home-symbolic");
     let (star, star_img) = icon_button("non-starred-symbolic");
-    back.set_tooltip_text(Some("Back (Alt+Left)"));
-    fwd.set_tooltip_text(Some("Forward (Alt+Right)"));
+    back.set_tooltip_text(Some("Back (Alt+Left). Right-click for history"));
+    fwd.set_tooltip_text(Some("Forward (Alt+Right). Right-click for history"));
     reload.set_tooltip_text(Some("Reload (Ctrl+R)"));
     home.set_tooltip_text(Some("Home (Alt+Home)"));
     star.set_tooltip_text(Some("Bookmark this page (Ctrl+D)"));
@@ -1392,6 +1451,12 @@ fn main() {
     let bind = |b: &gtk::Button, c: Cmd| { let a = app.clone(); b.connect_clicked(move |_| run(&a, c)); };
     bind(&back, Cmd::Back); bind(&fwd, Cmd::Forward); bind(&reload, Cmd::Reload); bind(&home, Cmd::Home);
     bind(&star, Cmd::Bookmark); bind(&plus, Cmd::NewTab);
+    for (b, is_back) in [(&back, true), (&fwd, false)] {
+        let a = app.clone();
+        b.connect_button_press_event(move |_, e| {
+            if e.button() == 3 { menus::nav_menu(&a, is_back, e); Propagation::Stop } else { Propagation::Proceed }
+        });
+    }
     {
         let (a, p) = (app.clone(), dl_pop.clone());
         dl_btn.connect_clicked(move |_| { downloads::render(&a); p.popup() });
@@ -1419,7 +1484,7 @@ fn main() {
         ("New tab", Cmd::NewTab), ("Reopen closed tab", Cmd::Reopen), ("Bookmark this page", Cmd::Bookmark),
         ("Find in page", Cmd::Find), ("Zoom in", Cmd::Zoom(1)), ("Zoom out", Cmd::Zoom(-1)),
         ("Reset zoom", Cmd::Zoom(0)), ("Print…", Cmd::Print), ("Developer tools", Cmd::Devtools),
-        ("Settings", Cmd::Settings), ("Quit", Cmd::Quit),
+        ("History", Cmd::History), ("Settings", Cmd::Settings), ("Quit", Cmd::Quit),
     ] {
         let b = gtk::Button::with_label(label);
         b.set_relief(gtk::ReliefStyle::None);
@@ -1459,6 +1524,7 @@ fn main() {
                     (false, Some('p')) => Some(Cmd::Print),
                     (true, Some('i')) => Some(Cmd::Devtools),
                     (false, Some(',')) => Some(Cmd::Settings),
+                    (false, Some('h')) => Some(Cmd::History),
                     (false, Some('q')) => Some(Cmd::Quit),
                     _ if key == k::Tab || key == k::Page_Down => Some(Cmd::NextTab(1)),
                     _ if key == k::ISO_Left_Tab || key == k::Page_Up => Some(Cmd::NextTab(-1)),
@@ -1511,7 +1577,7 @@ fn main() {
         let a = app.borrow();
         let s = &a.settings;
         let t = s.search_template().to_string();
-        let page = |u: &str| if is_settings_url(u) { SETTINGS_URI.to_string() } else { to_url(u, &t) };
+        let page = |u: &str| match internal(u) { Some(p) => p.uri().to_string(), None => to_url(u, &t) };
         match std::env::args().nth(1) {
             Some(arg) => (vec![Some(page(&arg))], 0),
             None => match s.startup.as_str() {
@@ -1575,15 +1641,20 @@ mod tests {
     fn settings_urls() {
         for u in ["zolith://settings", "zolith://settings/", "ZOLITH://Settings/", "about:settings",
                   "chrome://settings", " chrome://settings/#x "] {
-            assert!(is_settings_url(u), "{u}");
+            assert_eq!(internal(u), Some(Internal::Settings), "{u}");
+        }
+        for u in ["zolith://history", "ZOLITH://History/", "about:history", "chrome://history/?q=1"] {
+            assert_eq!(internal(u), Some(Internal::History), "{u}");
         }
         for u in ["", "https://zolith://settings", "zolith://settingsx", "zolith://settings.evil.com/",
                   "https://example.com/zolith://settings"] {
-            assert!(!is_settings_url(u), "{u}");
+            assert!(internal(u).is_none(), "{u}");
         }
         // what wry hands the IPC handler for our page must pass the check
         let req = wry::http::Request::builder().uri(SETTINGS_URI).body(()).unwrap();
-        assert!(is_settings_url(&req.uri().to_string()));
+        assert_eq!(internal(&req.uri().to_string()), Some(Internal::Settings));
+        let req = wry::http::Request::builder().uri(HISTORY_URI).body(()).unwrap();
+        assert_eq!(internal(&req.uri().to_string()), Some(Internal::History));
     }
 
     #[test]
@@ -1599,3 +1670,4 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 }
+

@@ -1,0 +1,151 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>History</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #202124; --card: #292a2d; --text: #e8eaed; --sub: #9aa0a6; --line: rgba(255, 255, 255, .1);
+    --blue: #8ab4f8; --field: #3c4043; --red: #f28b82;
+  }
+  * { box-sizing: border-box }
+  html, body { margin: 0; min-height: 100% }
+  body { background: var(--bg); color: var(--text); font: 13px/1.5 Roboto, "Segoe UI", system-ui, sans-serif }
+  svg { width: 20px; height: 20px; fill: currentColor; flex: none }
+
+  header {
+    position: sticky; top: 0; z-index: 2; height: 56px; display: flex; align-items: center; gap: 16px;
+    padding: 0 24px; background: var(--bg); border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 22px; font-weight: 400; margin: 0; width: 160px }
+  .search {
+    flex: 1; max-width: 680px; margin: 0 auto; display: flex; align-items: center; gap: 12px;
+    height: 40px; padding: 0 14px; border-radius: 20px; background: var(--field); color: var(--sub);
+  }
+  .search:focus-within { outline: 2px solid var(--blue) }
+  .search input { flex: 1; background: none; border: 0; outline: 0; color: var(--text); font: inherit; font-size: 14px }
+  .actions { width: 160px; display: flex; justify-content: flex-end; gap: 8px }
+  .btn {
+    font: inherit; font-weight: 500; height: 32px; padding: 0 14px; border-radius: 4px; cursor: pointer;
+    background: none; color: var(--blue); border: 1px solid #5f6368;
+  }
+  .btn:hover { background: rgba(138, 180, 248, .08) }
+  .btn.danger { color: var(--red) }
+  .btn.confirm { background: var(--red); color: #202124; border-color: var(--red) }
+
+  main { max-width: 800px; margin: 0 auto; padding: 8px 16px 64px }
+  h2 { font-size: 13px; font-weight: 500; color: var(--sub); margin: 24px 0 8px; padding-left: 4px }
+  .card { background: var(--card); border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 1px 3px 1px rgba(0, 0, 0, .15) }
+  .row { display: flex; align-items: center; gap: 16px; height: 40px; padding: 0 12px 0 16px }
+  .row + .row { border-top: 1px solid var(--line) }
+  .row:hover { background: rgba(255, 255, 255, .04) }
+  .time { color: var(--sub); width: 44px; flex: none; font-variant-numeric: tabular-nums }
+  .row a.title { color: var(--text); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55% }
+  .row a.title:hover { text-decoration: underline }
+  .domain { color: var(--sub); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  .del {
+    width: 28px; height: 28px; border-radius: 50%; border: 0; background: none; color: var(--sub);
+    display: grid; place-items: center; cursor: pointer; padding: 0; visibility: hidden;
+  }
+  .row:hover .del, .del:focus-visible { visibility: visible }
+  .del:hover { background: rgba(255, 255, 255, .1); color: var(--text) }
+  #empty { text-align: center; color: var(--sub); padding: 64px 0 }
+</style>
+
+<header>
+  <h1>History</h1>
+  <label class="search">
+    <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+    <input id="q" placeholder="Search history" autocomplete="off" spellcheck="false" autofocus>
+  </label>
+  <div class="actions"><button class="btn danger" id="clear">Clear all</button></div>
+</header>
+<main>
+  <div id="list"></div>
+  <div id="empty"></div>
+</main>
+
+<script>
+  // Filled in by the browser: [url, title, last visit as unix seconds], newest first.
+  let HISTORY = __HISTORY__;
+
+  const $ = (id) => document.getElementById(id);
+  const send = (...parts) => window.ipc.postMessage(parts.map((p) => String(p).replace(/\n/g, ' ')).join('\n'));
+  const pad = (n) => String(n).padStart(2, '0');
+  const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const host = (u) => { try { return new URL(u).host.replace(/^www\./, ''); } catch (e) { return u; } };
+  const dayLabel = (t) => {
+    const today = dayStart(new Date()), d = dayStart(new Date(t));
+    if (d === today) return 'Today';
+    if (d === today - 86400000) return 'Yesterday';
+    return new Date(t).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  };
+
+  function render() {
+    const q = $('q').value.trim().toLowerCase();
+    const terms = q.split(/\s+/).filter(Boolean);
+    const shown = HISTORY.filter(([u, t]) => terms.every((w) => (t + ' ' + u).toLowerCase().includes(w)));
+    const list = $('list');
+    list.textContent = '';
+    let card = null, lastDay = null;
+    for (const [url, title, secs] of shown) {
+      const when = new Date(secs * 1000);
+      const day = dayStart(when);
+      if (day !== lastDay) {
+        lastDay = day;
+        const h = document.createElement('h2');
+        h.textContent = dayLabel(secs * 1000);
+        card = document.createElement('div');
+        card.className = 'card';
+        list.append(h, card);
+      }
+      const row = document.createElement('div');
+      row.className = 'row';
+      const time = document.createElement('span');
+      time.className = 'time';
+      time.textContent = pad(when.getHours()) + ':' + pad(when.getMinutes());
+      const a = document.createElement('a');
+      a.className = 'title';
+      a.href = url;
+      a.textContent = title || url;
+      const dom = document.createElement('span');
+      dom.className = 'domain';
+      dom.textContent = host(url);
+      const del = document.createElement('button');
+      del.className = 'del';
+      del.title = 'Remove from history';
+      del.setAttribute('aria-label', 'Remove from history');
+      del.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
+      del.onclick = () => {
+        send('history-delete', url);
+        HISTORY = HISTORY.filter((e) => e[0] !== url);
+        render();
+      };
+      row.append(time, a, dom, del);
+      card.append(row);
+    }
+    $('empty').textContent = shown.length ? '' : (HISTORY.length ? 'No matching history' : 'Your browsing history will show up here');
+    $('clear').style.display = HISTORY.length ? '' : 'none';
+  }
+
+  let armed = 0;
+  $('clear').onclick = () => {
+    // two clicks, so history is not wiped by accident (page dialogs are unavailable)
+    if (!armed) {
+      $('clear').textContent = 'Click again to clear all';
+      $('clear').classList.add('confirm');
+      armed = setTimeout(() => { armed = 0; $('clear').textContent = 'Clear all'; $('clear').classList.remove('confirm'); }, 4000);
+      return;
+    }
+    clearTimeout(armed); armed = 0;
+    send('history-clear');
+    HISTORY = [];
+    $('clear').textContent = 'Clear all'; $('clear').classList.remove('confirm');
+    render();
+  };
+  $('q').oninput = render;
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '/' && document.activeElement !== $('q')) { e.preventDefault(); $('q').focus(); }
+  });
+  render();
+</script>

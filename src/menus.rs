@@ -2,7 +2,7 @@
 
 use super::*;
 use javascriptcore::ValueExt;
-use webkit2gtk::HitTestResult;
+use webkit2gtk::{BackForwardListExt, BackForwardListItemExt, HitTestResult};
 
 fn item(menu: &gtk::Menu, label: &str, enabled: bool, f: impl Fn() + 'static) {
     let mi = gtk::MenuItem::with_label(label);
@@ -43,7 +43,7 @@ pub fn tab_menu(app: &Sh, id: u32, ev: &gdk::EventButton) {
     let wv2 = wv.clone();
     item(&menu, "Reload", !url.is_empty(), move || wv2.reload());
     let (ap, u) = (app.clone(), url.clone());
-    item(&menu, "Duplicate", !url.is_empty() && !is_settings_url(&url), move || { new_tab(&ap, Some(u.clone()), true); });
+    item(&menu, "Duplicate", !url.is_empty() && internal(&url).is_none(), move || { new_tab(&ap, Some(u.clone()), true); });
     let ap = app.clone();
     item(&menu, if pinned { "Unpin tab" } else { "Pin tab" }, true, move || pin_tab(&ap, id, !pinned));
     separator(&menu);
@@ -146,4 +146,33 @@ pub fn copy_text(text: &str) {
             cb.set_text(text);
         }
     }
+}
+
+/// The pages Back (or Forward) can jump to, nearest first, with their labels.
+pub fn nav_pages(app: &Sh, back: bool) -> Vec<(String, webkit2gtk::BackForwardListItem)> {
+    let Some(wv) = cur_wv(app) else { return vec![] };
+    let Some(list) = wv.back_forward_list() else { return vec![] };
+    let pages = if back { list.back_list_with_limit(15) } else { list.forward_list_with_limit(15) };
+    pages
+        .into_iter()
+        .map(|page| {
+            let title = page.title().map(|t| t.to_string()).filter(|t| !t.is_empty());
+            let label = title.or_else(|| page.uri().map(|u| u.to_string())).unwrap_or_else(|| "Page".into());
+            (short(&label, 48), page)
+        })
+        .collect()
+}
+
+/// Right-click on Back or Forward.
+pub fn nav_menu(app: &Sh, back: bool, ev: &gdk::EventButton) {
+    let (Some(wv), pages) = (cur_wv(app), nav_pages(app, back)) else { return };
+    if pages.is_empty() {
+        return;
+    }
+    let menu = gtk::Menu::new();
+    for (label, page) in pages {
+        let wv = wv.clone();
+        item(&menu, &label, true, move || wv.go_to_back_forward_list_item(&page));
+    }
+    show(menu, Some(ev));
 }
