@@ -58,7 +58,8 @@ No Electron, no Chromium: just GTK and your system's WebKit.
 - Downloads that never overwrite existing files, with a status message
 - Middle-click or `Ctrl`+click opens a link in a background tab
 - Fullscreen video hides the toolbar
-- Dark theme
+- Dark theme, with colour themes to choose from (including an Opera-style red)
+- A first-run setup guide: search engine, theme, bookmark import, default browser
 
 ## Install
 
@@ -169,7 +170,7 @@ Run the tests with `cargo test`. `scripts/ui-test.sh` is an end-to-end smoke tes
 
 ## Roadmap
 
-Next up: password saving through the system keyring, dragging tabs out into new windows, vertical tabs, a first-run setup guide with cookie import, and per-site settings. Ideas and bug reports are welcome in the issue tracker.
+Next up: password saving through the system keyring, dragging tabs out into new windows, cookie and password import, and per-site settings. Ideas and bug reports are welcome in the issue tracker.
 
 ## License
 
