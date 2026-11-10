@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 description = "A fast, minimal web browser for Linux, built with Rust, GTK and WebKit"
-repository = "https://github.com/ash262049-png/zolith"
+repository = "https://github.com/cuniboyy/zolith"
 readme = "README.md"
 keywords = ["browser", "webkit", "gtk"]
 categories = ["gui"]

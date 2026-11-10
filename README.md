@@ -9,7 +9,7 @@
 Chrome-style tabs and settings, a smart address bar, and a built-in ad blocker.
 No Electron, no Chromium: just GTK and your system's WebKit.
 
-[Download](https://github.com/ash262049-png/zolith/releases/latest) ·
+[Download](https://github.com/cuniboyy/zolith/releases/latest) ·
 [Features](#features) ·
 [Build from source](#build-from-source) ·
 [Shortcuts](#keyboard-shortcuts)
@@ -68,7 +68,7 @@ No Electron, no Chromium: just GTK and your system's WebKit.
 
 ### From a release
 
-Download `zolith-0.1.0-linux-x86_64.tar.gz` from the [latest release](https://github.com/ash262049-png/zolith/releases/latest), then:
+Download `zolith-0.1.0-linux-x86_64.tar.gz` from the [latest release](https://github.com/cuniboyy/zolith/releases/latest), then:
 
 ```bash
 tar xzf zolith-0.1.0-linux-x86_64.tar.gz
@@ -97,7 +97,7 @@ You need [Rust](https://rustup.rs) and the development packages:
 | Arch | `webkit2gtk-4.1 gtk3 libsoup3` |
 
 ```bash
-git clone https://github.com/ash262049-png/zolith.git
+git clone https://github.com/cuniboyy/zolith.git
 cd zolith
 cargo build --release
 ./install.sh
