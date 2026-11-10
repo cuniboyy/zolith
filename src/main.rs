@@ -1,4 +1,5 @@
 mod adblock;
+mod downloads;
 mod menus;
 mod settings;
 mod suggest;
@@ -115,6 +116,11 @@ struct App {
     /// Whether the current keystroke may inline-complete (not after deleting).
     inline_ok: bool,
     http: soup::Session,
+    dls: Vec<downloads::Dl>,
+    next_dl: u32,
+    dl_pending: bool,
+    dl_btn: gtk::Button,
+    dl_list: gtk::Box,
 }
 
 type Sh = Rc<RefCell<App>>;
@@ -422,15 +428,6 @@ fn schedule_layout(app: &Sh) {
             glib::ControlFlow::Break
         }
         Err(_) => glib::ControlFlow::Continue,
-    });
-}
-
-/// Show a message in the status corner for a few seconds.
-fn flash(app: &Sh, msg: String) {
-    with(app, |a| a.set_status(&msg));
-    let a = app.clone();
-    glib::timeout_add_seconds_local_once(6, move || {
-        with(&a, |x| if x.status.text() == msg.as_str() { x.set_status("") })
     });
 }
 
@@ -948,7 +945,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     }
     if first {
         // wry attaches these to the shared context, so they must be registered exactly once
-        let (d1, d2) = (app.clone(), app.clone());
+        let d1 = app.clone();
         b = b
             .with_download_started_handler(move |_, path| {
                 let dir = d1.try_borrow().map(|a| a.settings.download_dir());
@@ -957,16 +954,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
                         *path = unique_path(&dir, &name);
                     }
                 }
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                flash(&d1, format!("Downloading {name}…"));
                 true
-            })
-            .with_download_completed_handler(move |_, path, ok| {
-                flash(&d2, match (ok, path) {
-                    (true, Some(p)) => format!("Saved {}", p.display()),
-                    (true, None) => "Download finished".into(),
-                    (false, _) => "Download failed".into(),
-                });
             });
     }
     b = match &url {
@@ -980,8 +968,11 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     adblock::apply(&wv, s.adblock);
     wv.set_zoom_level(s.zoom as f64 / 100.0);
     if first {
-        if let Some(c) = wv.context().filter(|c| c.favicon_database_directory().is_none()) {
-            c.set_favicon_database_directory(Some(&settings::data_dir().join("favicons").to_string_lossy()));
+        if let Some(c) = wv.context() {
+            downloads::hook(app, &c);
+            if c.favicon_database_directory().is_none() {
+                c.set_favicon_database_directory(Some(&settings::data_dir().join("favicons").to_string_lossy()));
+            }
         }
     }
     if is_settings {
@@ -1233,8 +1224,24 @@ fn main() {
     menu.set_border_width(6);
     menu_btn.set_popover(Some(&pop));
     for b in [&back, &fwd, &reload, &home] { toolbar.pack_start(b, false, false, 0) }
+    let (dl_btn, _) = icon_button("folder-download-symbolic");
+    dl_btn.set_tooltip_text(Some("Downloads"));
+    dl_btn.show_all();
+    dl_btn.set_no_show_all(true);
+    dl_btn.hide();
+    let dl_pop = gtk::Popover::new(Some(&dl_btn));
+    let dl_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    dl_box.set_size_request(380, -1);
+    let dl_list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let dl_clear = gtk::Button::with_label("Clear list");
+    dl_clear.set_relief(gtk::ReliefStyle::None);
+    dl_box.pack_start(&dl_list, false, false, 0);
+    dl_box.pack_start(&dl_clear, false, false, 4);
+    dl_box.show_all();
+    dl_pop.add(&dl_box);
     toolbar.pack_start(&entry, true, true, 6);
     toolbar.pack_start(&star, false, false, 0);
+    toolbar.pack_start(&dl_btn, false, false, 0);
     toolbar.pack_start(&menu_btn, false, false, 0);
 
     // ---- bookmarks bar, content stack (+ status corner), find bar ----
@@ -1357,6 +1364,7 @@ fn main() {
         history: suggest::load(), sug_pop, top: top.clone(), sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
         last_typed: String::new(), inline_ok: false,
         http: suggest::new_session(),
+        dls: vec![], next_dl: 0, dl_pending: false, dl_btn: dl_btn.clone(), dl_list: dl_list.clone(),
     }));
 
     // ---- wiring ----
@@ -1384,6 +1392,12 @@ fn main() {
     let bind = |b: &gtk::Button, c: Cmd| { let a = app.clone(); b.connect_clicked(move |_| run(&a, c)); };
     bind(&back, Cmd::Back); bind(&fwd, Cmd::Forward); bind(&reload, Cmd::Reload); bind(&home, Cmd::Home);
     bind(&star, Cmd::Bookmark); bind(&plus, Cmd::NewTab);
+    {
+        let (a, p) = (app.clone(), dl_pop.clone());
+        dl_btn.connect_clicked(move |_| { downloads::render(&a); p.popup() });
+        let a = app.clone();
+        dl_clear.connect_clicked(move |_| downloads::clear(&a));
+    }
     bind(&fprev, Cmd::FindNext(true)); bind(&fnext, Cmd::FindNext(false)); bind(&fclose, Cmd::CloseFind);
     {
         // only user typing opens suggestions: programmatic updates happen while the App is borrowed
