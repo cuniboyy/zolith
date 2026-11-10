@@ -7,7 +7,7 @@ use tao::{
     platform::unix::WindowExtUnix,
     window::WindowBuilder,
 };
-use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder, WebViewBuilderExtUnix};
+use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebView,WebViewBuilder, WebViewBuilderExtUnix};
 
 const CSS: &str = include_str!("style.css");
 const NEWTAB: &str = include_str!("newtab.html");
@@ -18,7 +18,7 @@ const NEWTAB: &str = include_str!("newtab.html");
 #[derive(Clone, Copy)]
 enum Cmd {
     NewTab, CloseTab, Reopen, Reload, Back, Forward, Home, FocusUrl,
-    Find, FindNext(bool), CloseFind, Zoom(i8), Print, Devtools, Bookmark, NextTab(i32), Quit,
+    Find, FindNext(bool), FindTyped, CloseFind, Zoom(i8), Print, Devtools, Bookmark, NextTab(i32), Quit,
 }
 
 struct Tab {
@@ -47,6 +47,7 @@ struct App {
     bm_bar: gtk::Box,
     find_bar: gtk::Box,
     find_entry: gtk::Entry,
+    ctx: Rc<RefCell<WebContext>>,
 }
 
 type Sh = Rc<RefCell<App>>;
@@ -60,10 +61,14 @@ fn with(app: &Sh, f: impl FnOnce(&mut App)) {
 
 fn to_url(input: &str) -> String {
     let s = input.trim();
+    let host = s.split(['/', '?', '#']).next().unwrap_or("").split(':').next().unwrap_or("");
+    let is_local = host == "localhost"
+        || (host.contains('.') && host.bytes().all(|b| b.is_ascii_digit() || b == b'.'));
     if s.contains("://") || s.starts_with("about:") {
         s.to_string()
-    } else if s.contains('.') && !s.contains(' ') || s.starts_with("localhost") {
-        format!("https://{s}")
+    } else if !s.contains(' ') && (s.contains('.') || host == "localhost") {
+        // local servers rarely speak https
+        format!("{}://{s}", if is_local { "http" } else { "https" })
     } else {
         let q: String = s.bytes().map(|b| match b {
             b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
@@ -156,10 +161,15 @@ impl App {
             }
             Cmd::Print => t.view.print(),
             Cmd::Devtools => { t.view.open_devtools(); Ok(()) }
-            Cmd::FindNext(back) => {
+            Cmd::FindNext(_) | Cmd::FindTyped => {
                 let q = self.find_entry.text();
                 if q.is_empty() { return }
-                t.view.evaluate_script(&format!("window.find({},false,{back},true)", js_str(&q)))
+                let back = matches!(c, Cmd::FindNext(true));
+                // while typing, restart from the current match so it doesn't skip ahead
+                let pre = if matches!(c, Cmd::FindTyped) {
+                    "if(getSelection().rangeCount)getSelection().collapseToStart();"
+                } else { "" };
+                t.view.evaluate_script(&format!("{pre}window.find({},false,{back},true)", js_str(&q)))
             }
             _ => Ok(()),
         };
@@ -198,6 +208,7 @@ fn run(app: &Sh, c: Cmd) {
 }
 
 fn go(app: &Sh, input: &str) {
+    if input.trim().is_empty() { return }
     with(app, |a| {
         let t = a.cur();
         let _ = t.view.load_url(&to_url(input));
@@ -252,17 +263,19 @@ fn close_tab(app: &Sh, id: u32) {
 }
 
 fn new_tab(app: &Sh, url: Option<String>) {
-    let (id, stack, tabs_box, entry) = {
+    let (id, stack, tabs_box, entry, ctx) = {
         let mut a = app.borrow_mut();
         a.next_id += 1;
-        (a.next_id, a.stack.clone(), a.tabs_box.clone(), a.entry.clone())
+        (a.next_id, a.stack.clone(), a.tabs_box.clone(), a.entry.clone(), a.ctx.clone())
     };
     let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
     stack.add_named(&page, &id.to_string());
     page.show();
 
     let (a1, a2, a3) = (app.clone(), app.clone(), app.clone());
-    let b = WebViewBuilder::new()
+    // One shared persistent context: cookies/logins survive restarts and are shared by tabs.
+    let mut ctx = ctx.borrow_mut();
+    let b = WebViewBuilder::new_with_web_context(&mut ctx)
         .with_devtools(true)
         .with_on_page_load_handler(move |ev, u| {
             let loading = matches!(ev, PageLoadEvent::Started);
@@ -276,11 +289,12 @@ fn new_tab(app: &Sh, url: Option<String>) {
         });
     let b = match &url { Some(u) => b.with_url(u), None => b.with_html(NEWTAB) };
     let view = b.build_gtk(&page).expect("webview");
+    drop(ctx);
 
     let label = gtk::Label::new(Some("New Tab"));
     label.set_ellipsize(pango::EllipsizeMode::End);
     label.set_xalign(0.0);
-    label.set_width_chars(16);
+    // no width_chars: it forces a minimum width, so many tabs would stop the window shrinking
     label.set_max_width_chars(24);
     label.set_hexpand(true);
     let close = gtk::Button::from_icon_name(Some("window-close-symbolic"), gtk::IconSize::Menu);
@@ -434,6 +448,9 @@ fn main() {
     let app: Sh = Rc::new(RefCell::new(App {
         next_id: 0, cur: 0, tabs: vec![], closed: vec![], marks: load_marks(),
         stack, tabs_box, entry: entry.clone(), reload_img, star_img, bm_bar, find_bar, find_entry: find_entry.clone(),
+        ctx: Rc::new(RefCell::new(WebContext::new(Some(
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/zolith"),
+        )))),
     }));
 
     // ---- wiring ----
@@ -443,7 +460,7 @@ fn main() {
     bind(&fprev, Cmd::FindNext(true)); bind(&fnext, Cmd::FindNext(false)); bind(&fclose, Cmd::CloseFind);
     { let a = app.clone(); entry.connect_activate(move |e| go(&a, &e.text())); }
     { let a = app.clone(); find_entry.connect_activate(move |_| run(&a, Cmd::FindNext(false))); }
-    { let a = app.clone(); find_entry.connect_changed(move |_| run(&a, Cmd::FindNext(false))); }
+    { let a = app.clone(); find_entry.connect_changed(move |_| run(&a, Cmd::FindTyped)); }
     for (label, c) in [
         ("New tab", Cmd::NewTab), ("Reopen closed tab", Cmd::Reopen), ("Bookmark this page", Cmd::Bookmark),
         ("Find in page", Cmd::Find), ("Zoom in", Cmd::Zoom(1)), ("Zoom out", Cmd::Zoom(-1)),
@@ -526,4 +543,19 @@ fn main() {
             *flow = ControlFlow::Exit;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_url;
+
+    #[test]
+    fn urls() {
+        assert_eq!(to_url("example.com"), "https://example.com");
+        assert_eq!(to_url("localhost:3000"), "http://localhost:3000");
+        assert_eq!(to_url("192.168.1.5:8080/x"), "http://192.168.1.5:8080/x");
+        assert_eq!(to_url("https://a.b/c d"), "https://a.b/c d");
+        assert_eq!(to_url("rust lifetimes"), "https://duckduckgo.com/?q=rust+lifetimes");
+        assert_eq!(to_url("what is 1.5?"), "https://duckduckgo.com/?q=what+is+1.5%3F");
+    }
 }
