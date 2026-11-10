@@ -50,6 +50,24 @@
   .row:hover .del, .del:focus-visible { visibility: visible }
   .del:hover { background: rgba(255, 255, 255, .1); color: var(--text) }
   #empty { text-align: center; color: var(--sub); padding: 64px 0 }
+  :root { --bg: #17151a; --card: #252129; --text: #f6f2f6; --sub: #aaa2ad; --line: rgba(255,255,255,.075); --blue: #ff647f; --field: #2d2931; --red: #ff858d }
+  body { background: radial-gradient(ellipse at 50% 0, rgba(156,38,67,.1), transparent 50%), var(--bg); }
+  header { height: 64px; padding: 0 24px; background: rgba(23,21,26,.94); border-color: var(--line); backdrop-filter: blur(16px); }
+  h1 { font-weight: 550; letter-spacing: -.025em; }
+  .search { height: 42px; border: 1px solid transparent; border-radius: 13px; background: var(--field); transition: border-color .18s, box-shadow .18s; }
+  .search:focus-within { outline: none; border-color: rgba(255,100,127,.7); box-shadow: 0 0 0 4px rgba(250,49,88,.09); }
+  main { padding-top: 12px; }
+  h2 { margin-top: 26px; font-size: 12px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
+  .card { border: 1px solid rgba(255,255,255,.055); border-radius: 14px; background: linear-gradient(145deg, rgba(255,255,255,.018), transparent 45%), var(--card); box-shadow: 0 10px 30px rgba(0,0,0,.12); overflow: hidden; }
+  .row { height: 48px; transition: background .16s; animation: row-in .24s ease-out both; }
+  .row:hover { background: rgba(255,255,255,.045); }
+  .row a.title:hover { color: var(--blue); }
+  .btn { height: 36px; border-radius: 9px; transition: background .18s, transform .18s; }
+  .btn:active { transform: scale(.97); }
+  .del { transition: background .16s, color .16s; }
+  #empty { animation: row-in .3s ease-out both; }
+  @keyframes row-in { from { opacity: 0; transform: translateY(5px) } to { opacity: 1; transform: translateY(0) } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important } }
 </style>
 
 <header>

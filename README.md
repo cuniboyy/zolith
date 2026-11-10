@@ -62,18 +62,18 @@ No Electron, no Chromium: just GTK and your system's WebKit.
 - Fullscreen video hides the toolbar
 - Sites ask before using your camera, microphone, screen or location, with a Chrome-style prompt under the address bar; answers are remembered per site and can be reset in Settings
 - Spell check in text fields
-- Dark theme, with colour themes to choose from (including an Opera-style red)
+- Opera-inspired charcoal and ruby theme, with Ocean and Violet alternatives
 - A first-run setup guide: search engine, theme, bookmark import, default browser
 
 ## Install
 
 ### From a release
 
-Download `zolith-0.1.0-linux-x86_64.tar.gz` from the [latest release](https://github.com/cuniboyy/zolith/releases/latest), then:
+Download `zolith-0.1.1-linux-x86_64.tar.gz` from the [latest release](https://github.com/cuniboyy/zolith/releases/latest), then:
 
 ```bash
-tar xzf zolith-0.1.0-linux-x86_64.tar.gz
-cd zolith-0.1.0-linux-x86_64
+tar xzf zolith-0.1.1-linux-x86_64.tar.gz
+cd zolith-0.1.1-linux-x86_64
 ./install.sh
 ```
 

@@ -30,7 +30,7 @@ use tao::{
 use webkit2gtk::{
     FindControllerExt, FindOptions, HitTestResultExt, LoadEvent, NavigationPolicyDecision,
     NavigationPolicyDecisionExt, NavigationType, PolicyDecisionExt, PolicyDecisionType, PrintOperation,
-    PrintOperationExt, ResponsePolicyDecision, ResponsePolicyDecisionExt, URIRequestExt, WebContextExt,
+    PrintOperationExt, ResponsePolicyDecision, ResponsePolicyDecisionExt, SettingsExt, URIRequestExt, WebContextExt,
     WebInspectorExt, WebViewExt, WebsiteDataManagerExtManual, WebsiteDataTypes,
 };
 use wry::{NewWindowResponse, WebContext, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
@@ -213,7 +213,7 @@ fn internal(u: &str) -> Option<Internal> {
 /// Extra CSS for a colour theme, applied over the base dark style. "default" needs none.
 fn theme_css(theme: &str) -> String {
     let (accent, back, bar) = match theme {
-        "opera" => ("#fa1e4e", "#161618", "#232326"),
+        "opera" => ("#fa3158", "#17151a", "#252129"),
         "ocean" => ("#4ea1ff", "#14202b", "#1d2f40"),
         "violet" => ("#b388ff", "#1d1a2b", "#2a2540"),
         _ => return String::new(),
@@ -221,7 +221,7 @@ fn theme_css(theme: &str) -> String {
     format!(
         ".titlebar-box {{ background: {back}; }}
          .toolbar, .bookmarks, .findbar {{ background: {bar}; }}
-         .tab.selected {{ background: {bar}; box-shadow: inset 0 2px 0 {accent}; }}
+        .tab.selected {{ background: {bar}; box-shadow: inset 0 2px 0 {accent}; }}
          .urlbar {{ background-color: {back}; }}
          .urlbar:focus {{ background-color: {back}; border-color: {accent}; }}
          .toolbar button.busy {{ color: {accent}; }}
@@ -476,7 +476,7 @@ impl App {
             }
             let selected = Some(i) == sel;
             t.label.set_visible(!t.pinned);
-            t.close.set_visible(!t.pinned && (selected || w >= TAB_CLOSE_MIN));
+            t.close.set_visible(!t.pinned && w >= TAB_CLOSE_MIN);
             // separators sit between tabs, never touching the selected one
             t.sep.set_visible(!selected && Some(i + 1) != sel && i + 1 < self.tabs.len());
         }
@@ -934,27 +934,50 @@ fn suggest_render(app: &Sh, text: &str, online: &[String], complete: bool) {
         return;
     }
     let shrank = rows.len() < a.sug_rows.len();
-    for c in a.sug_list.children() { a.sug_list.remove(&c) }
-    for r in &rows {
-        let bx = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        bx.pack_start(&gtk::Image::from_icon_name(Some(kind_icon(r.kind)), gtk::IconSize::Menu), false, false, 0);
-        let main = gtk::Label::new(Some(&r.text));
-        main.set_xalign(0.0);
-        main.set_ellipsize(pango::EllipsizeMode::End);
-        bx.pack_start(&main, false, true, 0);
-        if !r.detail.is_empty() {
-            let d = gtk::Label::new(Some(&r.detail));
-            d.set_xalign(0.0);
-            d.set_ellipsize(pango::EllipsizeMode::End);
-            d.style_context().add_class("detail");
-            bx.pack_start(&d, true, true, 0);
+    let rebuild = rows.len() != a.sug_rows.len()
+        || a.sug_rows.iter().zip(&rows).any(|(old, new)| old.detail.is_empty() != new.detail.is_empty());
+    if rebuild {
+        for c in a.sug_list.children() { a.sug_list.remove(&c) }
+        for r in &rows {
+            let bx = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            bx.pack_start(&gtk::Image::from_icon_name(Some(kind_icon(r.kind)), gtk::IconSize::Menu), false, false, 0);
+            let main = gtk::Label::new(Some(&r.text));
+            main.set_xalign(0.0);
+            main.set_ellipsize(pango::EllipsizeMode::End);
+            bx.pack_start(&main, false, true, 0);
+            if !r.detail.is_empty() {
+                let d = gtk::Label::new(Some(&r.detail));
+                d.set_xalign(0.0);
+                d.set_ellipsize(pango::EllipsizeMode::End);
+                d.style_context().add_class("detail");
+                bx.pack_start(&d, true, true, 0);
+            }
+            let row = gtk::ListBoxRow::new();
+            row.set_can_focus(false);
+            row.add(&bx);
+            a.sug_list.add(&row);
         }
-        let row = gtk::ListBoxRow::new();
-        row.set_can_focus(false);
-        row.add(&bx);
-        a.sug_list.add(&row);
+        a.sug_list.show_all();
+    } else {
+        // Keep GTK rows alive while typing; removing and reinserting them each keystroke
+        // causes visible flicker and unnecessary layout work.
+        for (i, r) in rows.iter().enumerate() {
+            let Some(row) = a.sug_list.row_at_index(i as i32) else { continue };
+            let Some(bx) = row.child().and_then(|w| w.downcast::<gtk::Box>().ok()) else { continue };
+            let children = bx.children();
+            if let Some(icon) = children.first().cloned().and_then(|w| w.downcast::<gtk::Image>().ok()) {
+                icon.set_from_icon_name(Some(kind_icon(r.kind)), gtk::IconSize::Menu);
+            }
+            if let Some(label) = children.get(1).cloned().and_then(|w| w.downcast::<gtk::Label>().ok()) {
+                label.set_text(&r.text);
+            }
+            if !r.detail.is_empty() {
+                if let Some(detail) = children.get(2).cloned().and_then(|w| w.downcast::<gtk::Label>().ok()) {
+                    detail.set_text(&r.detail);
+                }
+            }
+        }
     }
-    a.sug_list.show_all();
     a.sug_rows = rows;
     // sit right under the address bar, as wide as it is
     let (x, y) = a.entry.translate_coordinates(&a.top, 0, 0).unwrap_or((0, 0));
@@ -1316,6 +1339,9 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     let view = b.build_gtk(&page).expect("webview");
     drop(ctx);
     let wv = view.webview();
+    if let Some(settings) = webkit2gtk::WebViewExt::settings(&wv) {
+        settings.set_enable_smooth_scrolling(true);
+    }
     adblock::apply(&wv, s.adblock);
     wv.set_zoom_level(s.zoom as f64 / 100.0);
     if first {
@@ -2027,6 +2053,7 @@ mod tests {
         // a page title can't break out of the script
         assert!(html.contains(r#"[["https://a.example/","A \"quoted\" \u003c/script>"]]"#), "{html}");
         assert!(html.contains(r#"const template = "https://www.google.com/search?q=%s";"#));
+        assert!(html.contains("<title>New Tab</title>"));
     }
 
     #[test]
@@ -2087,4 +2114,3 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 }
-

@@ -127,6 +127,44 @@
     main { padding-left: 16px; padding-right: 16px }
     .search { margin-left: 16px }
   }
+  :root {
+    --bg: #17151a; --card: #252129; --text: #f6f2f6; --sub: #aaa2ad; --line: rgba(255,255,255,.075);
+    --blue: #ff647f; --blue-bg: rgba(250,49,88,.13); --field: #2d2931; --red: #ff858d;
+  }
+  body { background: radial-gradient(ellipse at 50% 0, rgba(156,38,67,.1), transparent 50%), var(--bg); }
+  header { height: 64px; padding: 0 24px; background: rgba(23,25,31,.94); border-color: var(--line); backdrop-filter: blur(16px); }
+  .brand { font-weight: 550; letter-spacing: -.025em; }
+  .search { height: 42px; border: 1px solid transparent; border-radius: 13px; background: var(--field); transition: border-color .18s, box-shadow .18s; }
+  .search:focus-within { outline: none; border-color: rgba(255,100,127,.7); box-shadow: 0 0 0 4px rgba(250,49,88,.09); }
+  nav { top: 64px; padding-top: 18px; }
+  nav a { height: 42px; margin: 3px 18px 3px 12px; padding: 0 14px; border-radius: 12px; gap: 14px; transition: background .18s, color .18s, transform .18s; }
+  nav a:hover { transform: translateX(2px); background: rgba(255,255,255,.045); }
+  nav a.active { background: var(--blue-bg); }
+  main { padding-top: 14px; padding-bottom: 80px; }
+  h2 { font-size: 20px; font-weight: 560; letter-spacing: -.025em; margin: 28px 0 14px; padding-left: 2px; }
+  .card { border: 1px solid rgba(255,255,255,.055); border-radius: 14px; background: linear-gradient(145deg, rgba(255,255,255,.018), transparent 45%), var(--card); box-shadow: 0 10px 30px rgba(0,0,0,.12); overflow: hidden; }
+  .row { min-height: 58px; padding: 13px 20px; }
+  .row.clickable:hover { background: rgba(255,255,255,.045); }
+  .secondary { line-height: 1.45; }
+  select, input[type=text] { border: 1px solid rgba(255,255,255,.04); border-radius: 8px; transition: border-color .18s, box-shadow .18s, background .18s; }
+  select:focus, input[type=text]:focus { outline: none; border-color: rgba(255,100,127,.7); box-shadow: 0 0 0 3px rgba(250,49,88,.1); }
+  .btn { height: 36px; border-radius: 9px; border-color: rgba(255,255,255,.14); transition: background .18s, transform .18s, border-color .18s; }
+  .btn:hover { background: rgba(250,49,88,.1); border-color: rgba(255,100,127,.35); }
+  .btn:active { transform: scale(.97); }
+  .btn.action { color: #fff; background: var(--blue); border-color: var(--blue); }
+  .toggle .bar, .toggle .knob { transition-duration: .2s; }
+  .toggle input:checked ~ .bar { background: rgba(255,100,127,.42); }
+  .toggle input:checked ~ .knob { background: var(--blue); }
+  .about { padding: 24px; }
+  .logo { border-radius: 14px; background: linear-gradient(145deg, #ff607b, #c41f45); color: #fff; box-shadow: 0 6px 20px rgba(211,35,74,.2); }
+  section.show { animation: section-in .28s ease-out both; }
+  @keyframes section-in { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: translateY(0) } }
+  @media (max-width: 1000px) {
+    nav { top: 64px; background: #252129; }
+    header { padding: 0 14px; }
+    main { padding-top: 10px; }
+  }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important } }
 </style>
 
 <header>

@@ -1,90 +1,65 @@
-/* Dark palette; tab strip shaped like Chrome's */
-.titlebar-box { background: #1c1b22; border: none; box-shadow: none; }
+/* Opera-inspired charcoal chrome with a restrained ruby accent. */
+.titlebar-box { background: #17151a; border: none; box-shadow: none; }
 .tabs-scroll, .tabs-scroll viewport { background: transparent; border: none; box-shadow: none; }
 .tabs-scroll undershoot, .tabs-scroll overshoot { background: none; box-shadow: none; }
 
-/* Selected tab is the toolbar's colour and touches it, so they read as one surface. */
-.tab { background: transparent; color: #b8b8c4; border-radius: 8px 8px 0 0; min-height: 34px; }
-.tab:hover { background: rgba(251,251,254,0.06); }
-.tab.selected { background: #2b2a33; color: #fbfbfe; }
+.tab { background: transparent; color: #bcb6c1; border-radius: 10px 10px 4px 4px; min-height: 36px; }
+.tab:hover { background: rgba(255,255,255,.055); }
+.tab.selected { background: #252129; color: #fbf8fb; box-shadow: inset 0 2px 0 #fa3158; }
 .tab label { color: inherit; font-size: 12px; }
-.tab image { color: #b8b8c4; }
-.tab.selected image { color: #fbfbfe; }
-separator.tab-sep { background: #4a4a55; min-width: 1px; margin: 9px 0; }
+.tab image { color: #aaa3af; }
+.tab.selected image { color: #fbf8fb; }
+separator.tab-sep { background: rgba(205,196,210,.17); min-width: 1px; margin: 10px 0; }
 
-.tab-close {
-  background: transparent; border: none; box-shadow: none; border-radius: 50%;
-  padding: 0; min-width: 20px; min-height: 20px; color: inherit;
+.tab-close, .newtab-btn, .winbtn, .toolbar button, .bookmarks button, .findbar button {
+  background: transparent; background-image: none; border: none; box-shadow: none; color: #f3eff4;
 }
-.tab-close image { -gtk-icon-transform: scale(0.8); }
-.tab-close:hover { background: rgba(251,251,254,0.16); }
-.newtab-btn, .winbtn {
-  background: transparent; border: none; box-shadow: none;
-  padding: 0; color: #fbfbfe;
-}
-.newtab-btn { margin: 0 6px 4px 4px; min-height: 28px; min-width: 28px; border-radius: 50%; }
-.newtab-btn:hover, .winbtn:hover { background: rgba(251,251,254,0.14); }
-.winbtn { min-width: 36px; min-height: 28px; border-radius: 4px; margin: 0 1px 4px 1px; }
+.tab-close { border-radius: 50%; padding: 0; min-width: 22px; min-height: 22px; }
+.tab-close image { -gtk-icon-transform: scale(.8); }
+.tab-close:hover { background: rgba(255,255,255,.14); }
+.newtab-btn { margin: 0 8px 4px 6px; min-width: 30px; min-height: 30px; border-radius: 50%; }
+.winbtn { min-width: 38px; min-height: 30px; border-radius: 8px; margin: 0 1px 4px; }
+.newtab-btn:hover, .winbtn:hover { background: rgba(255,255,255,.1); }
 
-.toolbar { background: #2b2a33; padding: 6px 8px; border-bottom: 1px solid #0c0c0d; }
-.toolbar button {
-  background: transparent; border: none; box-shadow: none; border-radius: 4px;
-  min-width: 32px; min-height: 32px; padding: 0; color: #fbfbfe;
-}
-.toolbar button:hover { background: rgba(251,251,254,0.1); }
-.toolbar button:active { background: rgba(251,251,254,0.18); }
+.toolbar { background: #252129; padding: 7px 10px; border-bottom: 1px solid #131116; }
+.toolbar button { min-width: 34px; min-height: 34px; border-radius: 10px; }
+.toolbar button:hover, .bookmarks button:hover, .findbar button:hover { background: rgba(255,255,255,.085); }
+.toolbar button:active { background: rgba(250,49,88,.18); }
+.toolbar button:disabled { opacity: .36; }
 .urlbar {
-  background-color: #1c1b22; background-image: none; color: #fbfbfe;
-  border: 2px solid transparent; border-radius: 6px; box-shadow: none;
-  min-height: 32px; padding: 0 10px; font-size: 14px;
-  caret-color: #fbfbfe;
+  background-color: #19171c; background-image: none; color: #fbf8fb; caret-color: #fbf8fb;
+  border: 1px solid rgba(255,255,255,.045); border-radius: 12px; box-shadow: none;
+  min-height: 36px; padding: 0 12px; font-size: 14px;
 }
-.urlbar:hover { background-color: #52525e; }
-.urlbar:focus { background-color: #1c1b22; border-color: #00ddff; }
-.urlbar selection { background: #0061e0; color: #fbfbfe; }
-.urlbar image { color: #cfcfd8; }
+.urlbar:hover { background-color: #2c2830; }
+.urlbar:focus { background-color: #19171c; border-color: #fa3158; }
+.urlbar selection { background: #b52143; color: #fff; }
+.urlbar image { color: #c9c1cb; }
+.urlbar progress { background-color: rgba(250,49,88,.28); background-image: none; border: none; border-radius: 4px; }
 
-.bookmarks { background: #2b2a33; border-bottom: 1px solid #0c0c0d; padding: 2px 8px; }
-.bookmarks button {
-  background: transparent; border: none; box-shadow: none; border-radius: 4px;
-  min-height: 24px; padding: 0 8px; font-size: 12px; color: #fbfbfe;
-}
-.bookmarks button:hover { background: rgba(251,251,254,0.1); }
+.bookmarks { background: #252129; border-bottom: 1px solid #131116; padding: 3px 10px 5px; }
+.bookmarks button { border-radius: 8px; min-height: 26px; padding: 0 9px; font-size: 12px; }
+.findbar { background: #252129; border-top: 1px solid #131116; padding: 6px 10px; }
+.findbar entry { background-color: #19171c; background-image: none; color: #fbf8fb; border: 1px solid #514a55; border-radius: 9px; padding: 5px 9px; }
+.findbar entry:focus { border-color: #fa3158; }
+.findbar entry.notfound { background-color: #54202c; border-color: #ff7387; }
+.findbar button { min-width: 30px; min-height: 30px; border-radius: 9px; padding: 0; }
+.status { background: #252129; color: #fbf8fb; font-size: 12px; padding: 5px 10px; border: 1px solid #131116; border-left: none; border-bottom: none; border-radius: 0 9px 0 0; }
 
-.findbar { background: #2b2a33; border-top: 1px solid #0c0c0d; padding: 4px 8px; }
-.findbar entry { background-color: #1c1b22; background-image: none; color: #fbfbfe; border: 1px solid #52525e; }
-.findbar button { background: transparent; border: none; box-shadow: none; min-width: 28px; min-height: 28px; padding: 0; color: #fbfbfe; }
-.findbar button:hover { background: rgba(251,251,254,0.1); }
+box.suggestpop { background: #252129; border: 1px solid rgba(255,255,255,.1); border-radius: 13px; box-shadow: 0 12px 32px rgba(0,0,0,.48); padding: 5px; }
+list.suggest { background: transparent; padding: 3px 0; }
+list.suggest row { padding: 8px 12px; color: #fbf8fb; font-size: 13px; border-radius: 8px; }
+list.suggest row:hover { background: rgba(255,255,255,.06); }
+list.suggest row:selected { background: rgba(250,49,88,.2); color: #fff; }
+list.suggest image { color: #a9a1ad; }
+list.suggest .detail { color: #a9a1ad; font-size: 12px; }
+.toolbar button.busy { color: #ff5575; }
 
-.urlbar progress { background-color: rgba(0,221,255,0.22); background-image: none; border: none; border-radius: 4px; }
-.toolbar button:disabled { opacity: 0.35; }
-.findbar entry.notfound { background-color: #5c1f2b; border-color: #ff6a75; }
-.status {
-  background: #2b2a33; color: #fbfbfe; font-size: 12px; padding: 3px 8px;
-  border: 1px solid #0c0c0d; border-left: none; border-bottom: none; border-radius: 0 4px 0 0;
-}
-
-box.suggestpop { background: #2b2a33; border: 1px solid #0c0c0d; border-radius: 8px; box-shadow: 0 6px 16px rgba(0,0,0,0.5); padding: 4px 0; }
-list.suggest { background: transparent; padding: 4px 0; }
-list.suggest row { padding: 7px 14px; color: #fbfbfe; font-size: 13px; }
-list.suggest row:hover { background: rgba(251,251,254,0.07); }
-list.suggest row:selected { background: rgba(0,221,255,0.16); color: #fbfbfe; }
-list.suggest image { color: #9aa0a6; }
-list.suggest .detail { color: #9aa0a6; font-size: 12px; }
-
-.toolbar button.busy { color: #00ddff; }
-
-.titlebar-box.private { background: #2a1f3d; }
-.private-badge { background: #6b46c1; color: #fbfbfe; border-radius: 10px; padding: 1px 10px; font-size: 11px; margin-right: 6px; }
-
-/* permission question, shaped like Chrome's */
-box.permbubble { background: #292a2d; border: 1px solid #0c0c0d; border-radius: 12px; box-shadow: 0 6px 18px rgba(0,0,0,0.55); color: #e8eaed; }
-.perm-title { font-size: 14px; font-weight: 500; }
-.perm-btn { border-radius: 18px; min-height: 34px; padding: 0 16px; background: transparent; background-image: none;
-  border: 1px solid #5f6368; box-shadow: none; color: #8ab4f8; font-weight: 500; }
-.perm-btn:hover { background: rgba(138,180,248,0.1); }
-.perm-btn:disabled { opacity: 0.5; }
-
-/* a tab that was put to sleep to save memory */
-.tab.asleep label { opacity: 0.55; font-style: italic; }
-.tab.asleep image { opacity: 0.55; }
+.titlebar-box.private { background: #211a30; }
+.private-badge { background: #7655bd; color: #fbf8fb; border-radius: 12px; padding: 3px 10px; font-size: 11px; margin-right: 6px; }
+box.permbubble { background: #252129; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; box-shadow: 0 12px 32px rgba(0,0,0,.48); color: #f1edf2; }
+.perm-title { font-size: 14px; font-weight: 600; }
+.perm-btn { border-radius: 18px; min-height: 34px; padding: 0 16px; background: transparent; background-image: none; border: 1px solid #625a66; box-shadow: none; color: #ff6b85; font-weight: 600; }
+.perm-btn:hover { background: rgba(250,49,88,.1); }
+.perm-btn:disabled { opacity: .5; }
+.tab.asleep label, .tab.asleep image { opacity: .55; }

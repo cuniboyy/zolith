@@ -1,6 +1,6 @@
 [package]
 name = "zolith"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 description = "A fast, minimal web browser for Linux, built with Rust, GTK and WebKit"

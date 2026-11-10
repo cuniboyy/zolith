@@ -3,7 +3,7 @@
 <meta name="viewport" content="width=device-width">
 <title>Welcome to Zolith</title>
 <style>
-  :root { color-scheme: dark; --bg: #17171a; --card: #232326; --text: #f1f1f4; --sub: #a0a0ab; --line: rgba(255,255,255,.1); --acc: #00ddff; --acc-text: #06222a; }
+  :root { color-scheme: dark; --bg: #17151a; --card: #252129; --text: #f6f2f6; --sub: #aaa2ad; --line: rgba(255,255,255,.08); --acc: #fa3158; --acc-text: #fff; }
   * { box-sizing: border-box }
   html, body { margin: 0; min-height: 100% }
   body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, "Segoe UI", sans-serif; display: flex; justify-content: center }
@@ -35,6 +35,21 @@
   .go { margin-top: 22px; display: flex; justify-content: flex-end }
   .go .btn { font-size: 15px; padding: 11px 26px }
   #msg, #dmsg { color: var(--sub); font-size: 12px }
+  :root { --bg: #17151a; --card: #252129; --text: #f6f2f6; --sub: #aaa2ad; --line: rgba(255,255,255,.08); --acc: #fa3158; --acc-text: #fff }
+  body { background: radial-gradient(ellipse at 50% 0, rgba(156,38,67,.16), transparent 55%), var(--bg); }
+  main { padding-top: 56px; animation: welcome-in .5s cubic-bezier(.2,.8,.2,1) both; }
+  h1 { letter-spacing: -.04em; }
+  section { border: 1px solid rgba(255,255,255,.055); background: linear-gradient(145deg, rgba(255,255,255,.018), transparent 45%), var(--card); border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.13); transition: border-color .2s, transform .2s; }
+  section:hover { border-color: rgba(255,255,255,.1); transform: translateY(-1px); }
+  .choice { border-radius: 11px; transition: background .18s, border-color .18s, transform .18s; }
+  .choice:hover { transform: translateY(-1px); }
+  .choice.on { border-color: var(--acc); background: rgba(250,49,88,.11); }
+  .btn { border-radius: 11px; transition: background .18s, transform .18s; }
+  .btn:hover { transform: translateY(-1px); }
+  .btn:active { transform: scale(.97); }
+  .toggle .bar, .toggle .knob { transition-duration: .2s; }
+  @keyframes welcome-in { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: translateY(0) } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important } }
 </style>
 <main>
   <h1>Welcome to Zolith</h1>
@@ -69,7 +84,7 @@
 <script>
   const S = __STATE__;
   const ENGINES = __ENGINES__;
-  const THEMES = [['default', 'Zolith', '#00ddff'], ['opera', 'Opera red', '#fa1e4e'], ['ocean', 'Ocean', '#4ea1ff'], ['violet', 'Violet', '#b388ff']];
+  const THEMES = [['default', 'Zolith', '#fa3158'], ['opera', 'Opera red', '#ff1744'], ['ocean', 'Ocean', '#4ea1ff'], ['violet', 'Violet', '#b388ff']];
   let IS_DEFAULT = __DEFAULT__;
   const $ = (id) => document.getElementById(id);
   const send = (...p) => window.ipc.postMessage(p.map((x) => String(x).replace(/\n/g, ' ')).join('\n'));
