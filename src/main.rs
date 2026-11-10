@@ -837,13 +837,17 @@ fn suggest_render(app: &Sh, text: &str, online: &[String], complete: bool) {
                 let n = text.chars().count() as i32;
                 let shown = format!("{text}{}", completion.chars().skip(n as usize).collect::<String>());
                 let (seq, typed_now, app2) = (a.sug_seq, text.to_string(), app.clone());
-                glib::idle_add_local_once(move || {
+                // HIGH priority: normal idle work runs after GTK has already drawn a frame, which
+                // showed the address bar for a moment without the completion (visible as a flicker)
+                glib::idle_add_local_full(glib::Priority::HIGH, move || {
                     // holding the borrow also keeps our own "changed" handler from re-entering
-                    let Ok(a) = app2.try_borrow_mut() else { return };
-                    if a.sug_seq == seq && a.entry.has_focus() && a.entry.text().as_str() == typed_now {
-                        a.entry.set_text(&shown);
-                        a.entry.select_region(n, -1);
+                    if let Ok(a) = app2.try_borrow_mut() {
+                        if a.sug_seq == seq && a.entry.has_focus() && a.entry.text().as_str() == typed_now {
+                            a.entry.set_text(&shown);
+                            a.entry.select_region(n, -1);
+                        }
                     }
+                    glib::ControlFlow::Break
                 });
             }
             rows.push(row);
