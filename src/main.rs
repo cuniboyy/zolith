@@ -1,4 +1,5 @@
 mod adblock;
+mod menus;
 mod settings;
 mod suggest;
 
@@ -40,6 +41,8 @@ const TAB_MIN: i32 = 72;
 const TAB_CLOSE_MIN: i32 = 110;
 /// Room kept for the new-tab button and the drag area beside it.
 const PLUS_W: i32 = 40;
+/// Pinned tabs show just their icon.
+const PIN_W: i32 = 40;
 const DRAG_W: i32 = 48;
 
 // shortcut: no history page, private mode or tab dragging.
@@ -60,6 +63,7 @@ struct Tab {
     spinner: gtk::Spinner,
     close: gtk::Button,
     sep: gtk::Separator,
+    pinned: bool,
     /// Owns the webview: dropping it destroys the widget.
     _view: wry::WebView,
     wv: webkit2gtk::WebView,
@@ -239,6 +243,9 @@ impl App {
         let cur = self.tabs.iter().position(|t| t.id == self.cur).unwrap_or(0);
         let mut text = format!("{cur}\n");
         for t in &self.tabs {
+            if t.pinned {
+                text.push('*');
+            }
             text += &t.url.replace(['\n', '\r'], "");
             text.push('\n');
         }
@@ -290,28 +297,46 @@ impl App {
     /// Size tabs like Chrome: equal widths, as wide as fits up to TAB_MAX, never below TAB_MIN
     /// (the strip scrolls instead).
     fn layout_tabs(&self) {
-        let n = self.tabs.len().max(1) as i32;
+        let pinned = self.tabs.iter().filter(|t| t.pinned).count() as i32;
+        let n = (self.tabs.len() as i32 - pinned).max(1);
         // measured from the whole strip: the scroller itself is sized from the tabs
-        let avail = self.strip.allocated_width() - self.controls.allocated_width() - PLUS_W - DRAG_W;
+        let avail = self.strip.allocated_width() - self.controls.allocated_width() - PLUS_W - DRAG_W - pinned * PIN_W;
         let w = (avail / n).clamp(TAB_MIN, TAB_MAX);
         let sel = self.tabs.iter().position(|t| t.id == self.cur);
         for (i, t) in self.tabs.iter().enumerate() {
-            if t.head.width_request() != w {
-                t.head.set_size_request(w, -1);
+            let want = if t.pinned { PIN_W } else { w };
+            if t.head.width_request() != want {
+                t.head.set_size_request(want, -1);
             }
             let selected = Some(i) == sel;
-            t.close.set_visible(selected || w >= TAB_CLOSE_MIN);
+            t.label.set_visible(!t.pinned);
+            t.close.set_visible(!t.pinned && (selected || w >= TAB_CLOSE_MIN));
             // separators sit between tabs, never touching the selected one
             t.sep.set_visible(!selected && Some(i + 1) != sel && i + 1 < self.tabs.len());
         }
         self.scroll_to_selected();
     }
 
+    /// Move a tab to position `to`, staying inside its group (pinned tabs come first).
+    fn move_tab(&mut self, id: u32, to: usize) {
+        let Some(from) = self.tabs.iter().position(|t| t.id == id) else { return };
+        let pinned_n = self.tabs.iter().filter(|t| t.pinned).count();
+        let (lo, hi) = if self.tabs[from].pinned { (0, pinned_n.saturating_sub(1)) } else { (pinned_n, self.tabs.len() - 1) };
+        let to = to.clamp(lo, hi);
+        if to == from {
+            return;
+        }
+        let t = self.tabs.remove(from);
+        self.tabs_box.reorder_child(&t.head, to as i32);
+        self.tabs.insert(to, t);
+        self.layout_tabs();
+    }
+
     fn scroll_to_selected(&self) {
         let Some(i) = self.tabs.iter().position(|t| t.id == self.cur) else { return };
-        let w = self.tabs[i].head.width_request().max(TAB_MIN) as f64;
+        let w = self.tabs[i].head.width_request().max(PIN_W) as f64;
         let adj = self.tabs_scroll.hadjustment();
-        let x = i as f64 * w;
+        let x: f64 = self.tabs[..i].iter().map(|t| t.head.width_request().max(PIN_W) as f64).sum();
         if x < adj.value() {
             adj.set_value(x);
         } else if x + w > adj.value() + adj.page_size() {
@@ -847,6 +872,21 @@ fn rebuild_bookmarks(app: &Sh) {
     with(app, |a| a.sync_bars());
 }
 
+fn pin_tab(app: &Sh, id: u32, pin: bool) {
+    with(app, |a| {
+        let Some(i) = a.tabs.iter().position(|t| t.id == id) else { return };
+        if a.tabs[i].pinned == pin {
+            return;
+        }
+        a.tabs[i].pinned = pin;
+        let pinned_n = a.tabs.iter().filter(|t| t.pinned).count();
+        // pinned: join the end of the pinned group; unpinned: first of the rest
+        a.move_tab(id, if pin { pinned_n - 1 } else { pinned_n });
+        a.layout_tabs();
+        a.save_session();
+    });
+}
+
 fn close_tab(app: &Sh, id: u32) {
     let closed = {
         let Ok(mut a) = app.try_borrow_mut() else { return };
@@ -950,6 +990,8 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
 
     {
         let a = app.clone();
+        wv.connect_context_menu(move |wv, _menu, event, hit| { menus::page_menu(&a, wv, hit, event); true });
+        let a = app.clone();
         wv.connect_uri_notify(move |_| with(&a, |x| x.tab_changed(id, None)));
         let a = app.clone();
         wv.connect_load_changed(move |_, ev| with(&a, |x| x.tab_changed(id, Some(ev != LoadEvent::Finished))));
@@ -1033,16 +1075,52 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     outer.pack_start(&sep, false, false, 0);
     let head = gtk::EventBox::new();
     head.add(&outer);
-    head.add_events(gdk::EventMask::BUTTON_PRESS_MASK);
+    head.add_events(gdk::EventMask::BUTTON_PRESS_MASK | gdk::EventMask::BUTTON1_MOTION_MASK | gdk::EventMask::BUTTON_RELEASE_MASK);
     head.style_context().add_class("tab");
-    let a = app.clone();
+    // dragging: where the pointer was when pressed, and whether it has moved far enough to count
+    let drag: Rc<Cell<Option<(f64, bool)>>> = Rc::new(Cell::new(None));
+    let (a, d) = (app.clone(), drag.clone());
     head.connect_button_press_event(move |_, e| {
         match e.button() {
-            1 => select_tab(&a, id),
+            1 => { d.set(Some((e.root().0, false))); select_tab(&a, id) }
             2 => close_tab(&a, id),
+            3 => menus::tab_menu(&a, id, e),
             _ => {}
         }
         Propagation::Stop
+    });
+    let (app2, d) = (app.clone(), drag.clone());
+    head.connect_motion_notify_event(move |h, e| {
+        let Some((x0, moving)) = d.get() else { return Propagation::Proceed };
+        if !moving && (e.root().0 - x0).abs() < 8.0 {
+            return Propagation::Stop;
+        }
+        d.set(Some((x0, true)));
+        // the tab under the pointer is where this one should go
+        let to = {
+            let Ok(a) = app2.try_borrow() else { return Propagation::Stop };
+            let Some(px) = h.translate_coordinates(&a.tabs_box, e.position().0 as i32, 0).map(|p| p.0) else {
+                return Propagation::Stop;
+            };
+            let (mut x, mut to) = (0, a.tabs.len().saturating_sub(1));
+            for (i, t) in a.tabs.iter().enumerate() {
+                x += t.head.width_request().max(PIN_W);
+                if px < x {
+                    to = i;
+                    break;
+                }
+            }
+            to
+        };
+        with(&app2, |x| x.move_tab(id, to));
+        Propagation::Stop
+    });
+    let (a, d) = (app.clone(), drag);
+    head.connect_button_release_event(move |_, _| {
+        if d.take().is_some_and(|(_, moving)| moving) {
+            with(&a, |x| x.save_session());
+        }
+        Propagation::Proceed
     });
     head.show_all();
     spinner.hide();
@@ -1055,7 +1133,7 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
         None => String::new(),
     };
     let tab = Tab {
-        id, page, head, label, icon, spinner, close, sep, _view: view, wv,
+        id, page, head, label, icon, spinner, close, sep, pinned: false, _view: view, wv,
         // show the address right away instead of waiting for the first load event
         loading: !start_url.is_empty() && !is_settings,
         url: start_url,
@@ -1425,7 +1503,7 @@ fn main() {
             None => match s.startup.as_str() {
                 "restore" => {
                     let (cur, urls) = load_session();
-                    let tabs: Vec<_> = urls.into_iter().map(|u| (!u.is_empty()).then_some(u)).collect();
+                    let tabs: Vec<_> = urls.into_iter().map(|u| (!u.trim_start_matches('*').is_empty()).then_some(u)).collect();
                     if tabs.is_empty() { (vec![None], 0) } else { let n = tabs.len(); (tabs, cur.min(n - 1)) }
                 }
                 "page" if !s.startup_page.trim().is_empty() => (vec![Some(page(&s.startup_page))], 0),
@@ -1433,7 +1511,13 @@ fn main() {
             },
         }
     };
-    let ids: Vec<u32> = start.into_iter().enumerate().filter_map(|(i, u)| new_tab(&app, u, i == 0)).collect();
+    // a leading "*" in a saved line means the tab was pinned
+    let ids: Vec<u32> = start.into_iter().enumerate().filter_map(|(i, u)| {
+        let pinned = u.as_deref().is_some_and(|u| u.starts_with('*'));
+        let id = new_tab(&app, u.map(|u| u.trim_start_matches('*').to_string()), i == 0)?;
+        if pinned { pin_tab(&app, id, true) }
+        Some(id)
+    }).collect();
     if let Some(&id) = ids.get(sel) { select_tab(&app, id) }
 
     titlebar.show_all();

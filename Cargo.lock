@@ -2631,6 +2631,7 @@ name = "zolith"
 version = "0.1.0"
 dependencies = [
  "gtk",
+ "javascriptcore-rs",
  "soup3",
  "tao",
  "webkit2gtk",
