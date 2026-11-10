@@ -895,6 +895,8 @@ fn main() {
         .build(&event_loop)
         .unwrap();
     let win = window.gtk_window().clone();
+    // matches the launcher's icon (~/.local/share/icons/hicolor/*/apps/zolith.png)
+    win.set_icon_name(Some("zolith"));
 
     if let Some(s) = gtk::Settings::default() { s.set_gtk_application_prefer_dark_theme(true) }
     let css = gtk::CssProvider::new();
