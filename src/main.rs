@@ -63,16 +63,6 @@ fn private() -> bool {
     PRIVATE.load(Ordering::Relaxed)
 }
 
-/// Tabs in a column on the left (the "vertical tabs" setting, read once at startup).
-static VERTICAL: AtomicBool = AtomicBool::new(false);
-
-fn vertical() -> bool {
-    VERTICAL.load(Ordering::Relaxed)
-}
-
-/// Height of one tab in the vertical list.
-const VROW: i32 = 36;
-
 /// The URL given on the command line, ignoring flags.
 fn start_arg() -> Option<String> {
     std::env::args().skip(1).find(|a| !a.starts_with('-'))
@@ -217,9 +207,7 @@ fn theme_css(theme: &str) -> String {
     format!(
         ".titlebar-box {{ background: {back}; }}
          .toolbar, .bookmarks, .findbar {{ background: {bar}; }}
-         .sidebar {{ background: {back}; }}
          .tab.selected {{ background: {bar}; box-shadow: inset 0 2px 0 {accent}; }}
-         .vtab.selected {{ background: {bar}; box-shadow: inset 3px 0 0 {accent}; }}
          .urlbar {{ background-color: {back}; }}
          .urlbar:focus {{ background-color: {back}; border-color: {accent}; }}
          .toolbar button.busy {{ color: {accent}; }}
@@ -427,18 +415,6 @@ impl App {
     /// Size tabs like Chrome: equal widths, as wide as fits up to TAB_MAX, never below TAB_MIN
     /// (the strip scrolls instead).
     fn layout_tabs(&self) {
-        if vertical() {
-            for t in &self.tabs {
-                if t.head.height_request() != VROW {
-                    t.head.set_size_request(-1, VROW);
-                }
-                t.label.set_visible(true);
-                t.close.set_visible(!t.pinned);
-                t.sep.set_visible(false);
-            }
-            self.scroll_to_selected();
-            return;
-        }
         let pinned = self.tabs.iter().filter(|t| t.pinned).count() as i32;
         let n = (self.tabs.len() as i32 - pinned).max(1);
         // measured from the whole strip: the scroller itself is sized from the tabs
@@ -476,16 +452,6 @@ impl App {
 
     fn scroll_to_selected(&self) {
         let Some(i) = self.tabs.iter().position(|t| t.id == self.cur) else { return };
-        if vertical() {
-            let adj = self.tabs_scroll.vadjustment();
-            let (y, row) = (i as f64 * VROW as f64, VROW as f64);
-            if y < adj.value() {
-                adj.set_value(y);
-            } else if y + row > adj.value() + adj.page_size() {
-                adj.set_value(y + row - adj.page_size());
-            }
-            return;
-        }
         let w = self.tabs[i].head.width_request().max(PIN_W) as f64;
         let adj = self.tabs_scroll.hadjustment();
         let x: f64 = self.tabs[..i].iter().map(|t| t.head.width_request().max(PIN_W) as f64).sum();
@@ -1323,15 +1289,12 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     head.add(&outer);
     head.add_events(gdk::EventMask::BUTTON_PRESS_MASK | gdk::EventMask::BUTTON1_MOTION_MASK | gdk::EventMask::BUTTON_RELEASE_MASK);
     head.style_context().add_class("tab");
-    if vertical() {
-        head.style_context().add_class("vtab");
-    }
     // dragging: where the pointer was when pressed, and whether it has moved far enough to count
     let drag: Rc<Cell<Option<(f64, bool)>>> = Rc::new(Cell::new(None));
     let (a, d) = (app.clone(), drag.clone());
     head.connect_button_press_event(move |_, e| {
         match e.button() {
-            1 => { d.set(Some((if vertical() { e.root().1 } else { e.root().0 }, false))); select_tab(&a, id) }
+            1 => { d.set(Some((e.root().0, false))); select_tab(&a, id) }
             2 => close_tab(&a, id),
             3 => menus::tab_menu(&a, id, e),
             _ => {}
@@ -1341,23 +1304,16 @@ fn new_tab(app: &Sh, url: Option<String>, select: bool) -> Option<u32> {
     let (app2, d) = (app.clone(), drag.clone());
     head.connect_motion_notify_event(move |h, e| {
         let Some((x0, moving)) = d.get() else { return Propagation::Proceed };
-        let along = if vertical() { e.root().1 } else { e.root().0 };
-        if !moving && (along - x0).abs() < 8.0 {
+        if !moving && (e.root().0 - x0).abs() < 8.0 {
             return Propagation::Stop;
         }
         d.set(Some((x0, true)));
         // the tab under the pointer is where this one should go
         let to = {
             let Ok(a) = app2.try_borrow() else { return Propagation::Stop };
-            let Some((px, py)) = h.translate_coordinates(&a.tabs_box, e.position().0 as i32, e.position().1 as i32) else {
+            let Some(px) = h.translate_coordinates(&a.tabs_box, e.position().0 as i32, 0).map(|p| p.0) else {
                 return Propagation::Stop;
             };
-            if vertical() {
-                let to = ((py / VROW).max(0) as usize).min(a.tabs.len().saturating_sub(1));
-                drop(a);
-                with(&app2, |x| x.move_tab(id, to));
-                return Propagation::Stop;
-            }
             let (mut x, mut to) = (0, a.tabs.len().saturating_sub(1));
             for (i, t) in a.tabs.iter().enumerate() {
                 x += t.head.width_request().max(PIN_W);
@@ -1458,7 +1414,6 @@ fn main() {
         PRIVATE.store(true, Ordering::Relaxed);
         suggest::READ_ONLY.store(true, Ordering::Relaxed);
     }
-    VERTICAL.store(Settings::load().vertical_tabs, Ordering::Relaxed);
     match std::env::args().nth(1).as_deref() {
         Some("-V" | "--version") => return println!("zolith {}", env!("CARGO_PKG_VERSION")),
         Some("-h" | "--help") => {
@@ -1588,38 +1543,24 @@ fn main() {
     content.pack_start(&find_bar, false, false, 0);
     // the address-bar dropdown floats over everything below the toolbar
     let top = gtk::Overlay::new();
-    // vertical tabs live in a column to the left of everything else
-    let side = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    side.style_context().add_class("sidebar");
-    side.set_size_request(224, -1);
-    let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    if vertical() {
-        body.pack_start(&side, false, false, 0);
-    }
-    body.pack_start(&content, true, true, 0);
-    top.add(&body);
+    top.add(&content);
     top.add_overlay(&sug_pop);
     vbox.pack_start(&top, true, true, 0);
 
     // ---- titlebar: scrollable tab strip + window controls ----
-    let tabs_box = gtk::Box::new(if vertical() { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal }, 0);
+    let tabs_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     let (plus, _) = icon_button("list-add-symbolic");
     plus.style_context().add_class("newtab-btn");
     plus.set_tooltip_text(Some("New tab (Ctrl+T)"));
     plus.set_valign(gtk::Align::Center);
     let tabs_scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
     // External: scrollable, no scrollbar, and the strip never forces the window wider
-    if vertical() {
-        tabs_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::External);
-        tabs_scroll.set_vexpand(true);
-    } else {
-        tabs_scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
-    }
+    tabs_scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
     tabs_scroll.set_kinetic_scrolling(false);
     tabs_scroll.set_shadow_type(gtk::ShadowType::None);
     // natural width = the tabs' width, so + sits right after the last tab; when they don't
     // fit, GTK shrinks the scroller (its minimum is tiny) and the strip scrolls
-    tabs_scroll.set_propagate_natural_width(!vertical());
+    tabs_scroll.set_propagate_natural_width(true);
     // explicit: otherwise the tab labels' hexpand propagates up and the scroller grabs spare room
     tabs_scroll.set_hexpand(false);
     tabs_scroll.style_context().add_class("tabs-scroll");
@@ -1642,15 +1583,8 @@ fn main() {
     strip.set_margin_top(8);
     strip.set_margin_start(8);
     strip.set_margin_end(4);
-    if vertical() {
-        side.pack_start(&tabs_scroll, true, true, 0);
-        plus.set_halign(gtk::Align::Start);
-        plus.set_margin_start(2);
-        side.pack_end(&plus, false, false, 4);
-    } else {
-        strip.pack_start(&tabs_scroll, false, false, 0);
-        strip.pack_start(&plus, false, false, 0);
-    }
+    strip.pack_start(&tabs_scroll, false, false, 0);
+    strip.pack_start(&plus, false, false, 0);
     strip.pack_start(&spacer, true, true, 0);
     strip.pack_end(&controls, false, false, 0);
     let titlebar = gtk::EventBox::new();
@@ -1710,7 +1644,7 @@ fn main() {
             if alloc.width() != last.replace(alloc.width()) { schedule_layout(&a) }
         });
         // mouse wheel scrolls an overflowing strip sideways
-        if !vertical() { tabs_scroll.connect_scroll_event(|sw, e| {
+        tabs_scroll.connect_scroll_event(|sw, e| {
             let (dx, dy) = e.delta();
             let step = match e.direction() {
                 gdk::ScrollDirection::Up | gdk::ScrollDirection::Left => -1.0,
@@ -1720,7 +1654,7 @@ fn main() {
             let adj = sw.hadjustment();
             adj.set_value(adj.value() + step * 60.0);
             Propagation::Stop
-        }); }
+        });
         let a = app.clone();
         tabs_box.connect_size_allocate(move |_, _| { if let Ok(x) = a.try_borrow() { x.scroll_to_selected() } });
     }
