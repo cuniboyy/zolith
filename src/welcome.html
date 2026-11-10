@@ -1,0 +1,109 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>Welcome to Zolith</title>
+<style>
+  :root { color-scheme: dark; --bg: #17171a; --card: #232326; --text: #f1f1f4; --sub: #a0a0ab; --line: rgba(255,255,255,.1); --acc: #00ddff; --acc-text: #06222a; }
+  * { box-sizing: border-box }
+  html, body { margin: 0; min-height: 100% }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, "Segoe UI", sans-serif; display: flex; justify-content: center }
+  main { width: min(640px, 100%); padding: 40px 20px 64px }
+  h1 { font-size: 30px; font-weight: 600; margin: 0 0 4px }
+  .lead { color: var(--sub); margin: 0 0 28px }
+  section { background: var(--card); border-radius: 14px; padding: 18px 20px; margin-bottom: 14px }
+  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600 }
+  .choices { display: flex; flex-wrap: wrap; gap: 8px }
+  .choice {
+    font: inherit; color: var(--text); background: #2e2e33; border: 2px solid transparent; border-radius: 10px;
+    padding: 8px 14px; cursor: pointer;
+  }
+  .choice:hover { background: #38383e }
+  .choice.on { border-color: var(--acc); background: #2a3a3e }
+  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; vertical-align: -1px }
+  .row { display: flex; align-items: center; gap: 12px; justify-content: space-between }
+  .row + .row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line) }
+  .sub { color: var(--sub); font-size: 12px }
+  .btn { font: inherit; font-weight: 600; color: var(--acc-text); background: var(--acc); border: 0; border-radius: 10px; padding: 9px 16px; cursor: pointer }
+  .btn.ghost { color: var(--text); background: #2e2e33 }
+  .btn:disabled { opacity: .5; cursor: default }
+  .toggle { position: relative; width: 40px; height: 22px; flex: none }
+  .toggle input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer }
+  .toggle .bar { position: absolute; inset: 0; border-radius: 11px; background: #55555c; transition: background .1s }
+  .toggle .knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .1s }
+  .toggle input:checked ~ .bar { background: var(--acc) }
+  .toggle input:checked ~ .knob { transform: translateX(18px) }
+  .go { margin-top: 22px; display: flex; justify-content: flex-end }
+  .go .btn { font-size: 15px; padding: 11px 26px }
+  #msg, #dmsg { color: var(--sub); font-size: 12px }
+</style>
+<main>
+  <h1>Welcome to Zolith</h1>
+  <p class="lead">A few quick choices to make it yours. You can change all of them later in Settings.</p>
+
+  <section>
+    <h2>Search engine</h2>
+    <div class="choices" id="engines"></div>
+  </section>
+
+  <section>
+    <h2>Look</h2>
+    <div class="choices" id="themes"></div>
+    <div class="row" style="margin-top:14px">
+      <div>Vertical tabs<div class="sub">Tabs in a column on the left (applies after a restart)</div></div>
+      <label class="toggle"><input type="checkbox" id="vertical" aria-label="Vertical tabs"><span class="bar"></span><span class="knob"></span></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Bring your stuff</h2>
+    <div class="row">
+      <div>Import bookmarks<div class="sub" id="msg">From a bookmarks HTML file exported by Chrome, Firefox or Edge.</div></div>
+      <button class="btn ghost" id="import">Choose file…</button>
+    </div>
+    <div class="row">
+      <div>Make Zolith your default browser<div class="sub" id="dmsg">Links from other apps will open here.</div></div>
+      <button class="btn ghost" id="default">Make default</button>
+    </div>
+    <div class="sub" style="margin-top:12px">Importing cookies and saved passwords isn't supported yet.</div>
+  </section>
+
+  <div class="go"><button class="btn" id="finish">Start browsing</button></div>
+</main>
+
+<script>
+  const S = __STATE__;
+  const ENGINES = __ENGINES__;
+  const THEMES = [['default', 'Zolith', '#00ddff'], ['opera', 'Opera red', '#fa1e4e'], ['ocean', 'Ocean', '#4ea1ff'], ['violet', 'Violet', '#b388ff']];
+  let IS_DEFAULT = __DEFAULT__;
+  const $ = (id) => document.getElementById(id);
+  const send = (...p) => window.ipc.postMessage(p.map((x) => String(x).replace(/\n/g, ' ')).join('\n'));
+  const set = (k, v) => { S[k] = String(v); send('set', k, v); };
+
+  const pick = (box, items, current, onpick) => {
+    box.textContent = '';
+    for (const [id, label, color] of items) {
+      const b = document.createElement('button');
+      b.className = 'choice' + (id === current() ? ' on' : '');
+      if (color) { const s = document.createElement('span'); s.className = 'swatch'; s.style.background = color; b.append(s); }
+      b.append(label);
+      b.onclick = () => { onpick(id); pick(box, items, current, onpick); };
+      box.append(b);
+    }
+  };
+  pick($('engines'), ENGINES.filter((e) => e !== 'Custom').map((e) => [e, e]), () => S.engine, (e) => set('engine', e));
+  pick($('themes'), THEMES, () => S.theme, (t) => { set('theme', t); document.documentElement.style.setProperty('--acc', THEMES.find((x) => x[0] === t)[2]); });
+  document.documentElement.style.setProperty('--acc', (THEMES.find((x) => x[0] === S.theme) || THEMES[0])[2]);
+  $('vertical').checked = S.vertical_tabs === 'true';
+  $('vertical').onchange = () => set('vertical_tabs', $('vertical').checked);
+
+  $('import').onclick = () => send('import-bookmarks');
+  window.zolithBookmarks = (r) => {
+    if (r.cancelled) return;
+    $('msg').textContent = r.ok ? 'Imported ' + r.added + ' bookmark' + (r.added === 1 ? '' : 's') + '.' : (r.error || 'Could not import that file.');
+  };
+  const syncDefault = () => { $('default').style.display = IS_DEFAULT ? 'none' : ''; if (IS_DEFAULT) $('dmsg').textContent = 'Zolith is your default browser.'; };
+  $('default').onclick = () => send('make-default');
+  window.zolithDefault = (ok) => { IS_DEFAULT = ok; syncDefault(); if (!ok) $('dmsg').textContent = 'Could not change it. Install Zolith with install.sh first.'; };
+  syncDefault();
+  $('finish').onclick = () => send('welcome-finish');
+</script>

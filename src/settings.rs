@@ -21,6 +21,9 @@ pub fn suggest_template(engine: &str) -> Option<&'static str> {
 }
 pub const CUSTOM: &str = "Custom";
 
+/// Colour themes: (id, name).
+pub const THEMES: [(&str, &str); 4] = [("default", "Zolith"), ("opera", "Opera red"), ("ocean", "Ocean"), ("violet", "Violet")];
+
 pub const ZOOMS: [u32; 9] = [67, 75, 80, 90, 100, 110, 125, 150, 200];
 pub const STARTUPS: [&str; 3] = ["newtab", "restore", "page"];
 
@@ -46,6 +49,12 @@ pub struct Settings {
     pub zoom: u32,
     /// Empty means ~/Downloads.
     pub download_dir: String,
+    /// One of `THEMES`.
+    pub theme: String,
+    /// Tabs in a column on the left instead of along the top (applies after a restart).
+    pub vertical_tabs: bool,
+    /// The first-run setup guide has been completed.
+    pub welcome_done: bool,
 }
 
 impl Default for Settings {
@@ -54,6 +63,7 @@ impl Default for Settings {
             engine: ENGINES[0].0.into(), custom: String::new(), home: String::new(),
             show_home: true, show_bookmarks: true, adblock: true, community: true, suggest: true,
             startup: STARTUPS[0].into(), startup_page: String::new(), zoom: 100, download_dir: String::new(),
+            theme: THEMES[0].0.into(), vertical_tabs: false, welcome_done: false,
         }
     }
 }
@@ -83,13 +93,16 @@ impl Settings {
             "startup_page" => self.startup_page = v.into(),
             "zoom" => match v.parse() { Ok(z) if ZOOMS.contains(&z) => self.zoom = z, _ => return false },
             "download_dir" if v.is_empty() || v.starts_with('/') => self.download_dir = v.into(),
-            "show_home" | "show_bookmarks" | "adblock" | "community" | "suggest" => {
+            "theme" if THEMES.iter().any(|t| t.0 == v) => self.theme = v.into(),
+            "show_home" | "show_bookmarks" | "adblock" | "community" | "suggest" | "vertical_tabs" | "welcome_done" => {
                 let Some(b) = flag(v) else { return false };
                 match key {
                     "show_home" => self.show_home = b,
                     "show_bookmarks" => self.show_bookmarks = b,
                     "suggest" => self.suggest = b,
                     "community" => self.community = b,
+                    "vertical_tabs" => self.vertical_tabs = b,
+                    "welcome_done" => self.welcome_done = b,
                     _ => self.adblock = b,
                 }
             }
@@ -100,10 +113,15 @@ impl Settings {
 
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
-        let mut saw_startup = false;
+        let (mut saw_startup, mut saw_welcome) = (false, false);
         for (k, v) in text.lines().filter_map(|l| l.split_once('=')) {
             saw_startup |= k.trim() == "startup";
+            saw_welcome |= k.trim() == "welcome_done";
             s.set(k.trim(), v);
+        }
+        // settings saved before the setup guide existed: these users are not new
+        if !saw_welcome && text.lines().any(|l| l.contains('=')) {
+            s.welcome_done = true;
         }
         // older versions opened the home page at startup
         if !saw_startup && !s.home.is_empty() {
@@ -124,7 +142,8 @@ impl Settings {
             ("adblock", self.adblock.to_string()), ("community", self.community.to_string()), ("suggest", self.suggest.to_string()),
             ("startup", self.startup.clone()),
             ("startup_page", self.startup_page.clone()), ("zoom", self.zoom.to_string()),
-            ("download_dir", self.download_dir.clone()),
+            ("download_dir", self.download_dir.clone()), ("theme", self.theme.clone()),
+            ("vertical_tabs", self.vertical_tabs.to_string()), ("welcome_done", self.welcome_done.to_string()),
         ]
     }
 
@@ -245,11 +264,21 @@ mod tests {
         assert_eq!(Settings::parse(&s.serialize()), s);
         assert_eq!(s.search_template(), "https://s.example/?a=b&q=%s");
         // invalid values are ignored, not stored
-        assert_eq!(Settings::parse("garbage\nengine=Nope\nzoom=7\nadblock=yes\nstartup=x\n"), Settings::default());
+        assert_eq!(Settings::parse("garbage\nengine=Nope\nzoom=7\nadblock=yes\nstartup=x\n"), Settings { welcome_done: true, ..Settings::default() });
         // old files: a home page used to be the startup page too
         let old = Settings::parse("home=https://a.example\n");
         assert_eq!((old.startup.as_str(), old.startup_page.as_str()), ("page", "https://a.example"));
         assert_eq!(Settings::parse("home=https://a.example\nstartup=newtab\n").startup, "newtab");
+    }
+
+    #[test]
+    fn existing_users_skip_the_setup_guide() {
+        assert!(!Settings::parse("").welcome_done);
+        assert!(Settings::parse("engine=Google\n").welcome_done);
+        assert!(!Settings::parse("engine=Google\nwelcome_done=false\n").welcome_done);
+        assert!(Settings::parse("welcome_done=true\n").welcome_done);
+        assert_eq!(Settings::parse("theme=opera\n").theme, "opera");
+        assert_eq!(Settings::parse("theme=nope\n").theme, "default");
     }
 
     #[test]

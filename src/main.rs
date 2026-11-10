@@ -37,9 +37,11 @@ const CSS: &str = include_str!("style.css");
 const NEWTAB: &str = include_str!("newtab.html");
 const SETTINGS: &str = include_str!("settings.html");
 const HISTORY_PAGE: &str = include_str!("history.html");
+const WELCOME_PAGE: &str = include_str!("welcome.html");
 /// The settings page is loaded under this address; only it may send IPC messages.
 const SETTINGS_URI: &str = "zolith://settings/";
 const HISTORY_URI: &str = "zolith://history/";
+const WELCOME_URI: &str = "zolith://welcome/";
 
 /// Tab width limits, like Chrome: tabs share the strip evenly between these.
 const TAB_MAX: i32 = 240;
@@ -120,6 +122,7 @@ struct App {
     find_entry: gtk::Entry,
     status: gtk::Label,
     ctx: Rc<RefCell<WebContext>>,
+    theme_css: gtk::CssProvider,
     history: Vec<Visit>,
     /// Address bar dropdown: a panel drawn over the page (a popover would swallow editing keys).
     sug_pop: gtk::Box,
@@ -165,17 +168,18 @@ fn run_js(wv: &webkit2gtk::WebView, js: &str) {
 enum Internal {
     Settings,
     History,
+    Welcome,
 }
 
 impl Internal {
     fn uri(self) -> &'static str {
-        match self { Internal::Settings => SETTINGS_URI, Internal::History => HISTORY_URI }
+        match self { Internal::Settings => SETTINGS_URI, Internal::History => HISTORY_URI, Internal::Welcome => WELCOME_URI }
     }
     fn shown(self) -> &'static str {
-        match self { Internal::Settings => "zolith://settings", Internal::History => "zolith://history" }
+        match self { Internal::Settings => "zolith://settings", Internal::History => "zolith://history", Internal::Welcome => "zolith://welcome" }
     }
     fn icon(self) -> &'static str {
-        match self { Internal::Settings => "emblem-system-symbolic", Internal::History => "document-open-recent-symbolic" }
+        match self { Internal::Settings => "emblem-system-symbolic", Internal::History => "document-open-recent-symbolic", Internal::Welcome => "starred-symbolic" }
     }
 }
 
@@ -185,10 +189,32 @@ fn internal(u: &str) -> Option<Internal> {
     [
         ("zolith://settings", Internal::Settings), ("about:settings", Internal::Settings), ("chrome://settings", Internal::Settings),
         ("zolith://history", Internal::History), ("about:history", Internal::History), ("chrome://history", Internal::History),
+        ("zolith://welcome", Internal::Welcome), ("about:welcome", Internal::Welcome),
     ]
     .into_iter()
     .find(|(p, _)| u.strip_prefix(p).is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '#', '?'])))
     .map(|(_, page)| page)
+}
+
+/// Extra CSS for a colour theme, applied over the base dark style. "default" needs none.
+fn theme_css(theme: &str) -> String {
+    let (accent, back, bar) = match theme {
+        "opera" => ("#fa1e4e", "#161618", "#232326"),
+        "ocean" => ("#4ea1ff", "#14202b", "#1d2f40"),
+        "violet" => ("#b388ff", "#1d1a2b", "#2a2540"),
+        _ => return String::new(),
+    };
+    format!(
+        ".titlebar-box {{ background: {back}; }}
+         .toolbar, .bookmarks, .findbar {{ background: {bar}; }}
+         .tab.selected {{ background: {bar}; box-shadow: inset 0 2px 0 {accent}; }}
+         .urlbar {{ background-color: {back}; }}
+         .urlbar:focus {{ background-color: {back}; border-color: {accent}; }}
+         .toolbar button.busy {{ color: {accent}; }}
+         box.suggestpop {{ background: {bar}; }}
+         list.suggest row:selected {{ background: alpha({accent}, 0.22); }}
+         .newtab-btn:hover, .winbtn:hover {{ background: alpha({accent}, 0.2); }}"
+    )
 }
 
 fn newtab_html(s: &Settings) -> String {
@@ -206,6 +232,14 @@ fn settings_html(s: &Settings) -> String {
         .replace("__ADBLOCK_READY__", ready)
         .replace("__COMMUNITY__", &lists::status_json())
         .replace("__VERSION__", env!("CARGO_PKG_VERSION"))
+        .replace("__DEFAULT__", if is_default_browser() { "true" } else { "false" })
+}
+
+fn welcome_html(s: &Settings) -> String {
+    let engines: Vec<String> = settings::ENGINES.iter().map(|e| e.0).chain([settings::CUSTOM]).map(quote).collect();
+    WELCOME_PAGE
+        .replace("__STATE__", &s.to_json())
+        .replace("__ENGINES__", &format!("[{}]", engines.join(",")))
         .replace("__DEFAULT__", if is_default_browser() { "true" } else { "false" })
 }
 
@@ -236,7 +270,7 @@ fn make_default_browser() -> bool {
 fn load_internal(app: &Sh, wv: &webkit2gtk::WebView, page: Internal) {
     let Ok((s, h)) = app.try_borrow().map(|a| (a.settings.clone(), if page == Internal::History { a.history.clone() } else { vec![] }))
         else { return };
-    let html = match page { Internal::Settings => settings_html(&s), Internal::History => history_html(&h) };
+    let html = match page { Internal::Settings => settings_html(&s), Internal::History => history_html(&h), Internal::Welcome => welcome_html(&s) };
     wv.load_html(&html, Some(page.uri()));
 }
 
@@ -839,6 +873,9 @@ fn apply_setting(app: &Sh, key: &str, value: &str) {
         }
         a.settings.save();
         a.sync_bars();
+        if key == "theme" {
+            let _ = a.theme_css.load_from_data(theme_css(&a.settings.theme).as_bytes());
+        }
         let views: Vec<_> = a.tabs.iter().map(|t| t.wv.clone()).collect();
         let zoom = (old.zoom != a.settings.zoom).then_some((old.zoom as f64 / 100.0, a.settings.zoom as f64 / 100.0));
         let filter = key == "adblock" || key == "community";
@@ -868,7 +905,7 @@ fn handle_ipc(app: &Sh, id: u32, msg: &str) {
     let mut parts = msg.splitn(3, '\n');
     match (page, parts.next(), parts.next(), parts.next()) {
         // the download folder only changes through the folder picker below
-        (Internal::Settings, Some("set"), Some(k), Some(v)) if k != "download_dir" => apply_setting(app, k, v),
+        (Internal::Settings | Internal::Welcome, Some("set"), Some(k), Some(v)) if k != "download_dir" => apply_setting(app, k, v),
         (Internal::Settings, Some("clear"), Some(kinds), Some(range)) => {
             let (history, rest): (Vec<&str>, Vec<&str>) = kinds.split(',').partition(|k| *k == "history");
             if !history.is_empty() {
@@ -885,9 +922,13 @@ fn handle_ipc(app: &Sh, id: u32, msg: &str) {
         }
         (Internal::Settings, Some("pick-download-dir"), _, _) => pick_download_dir(app, &wv),
         (Internal::Settings, Some("update-lists"), _, _) => lists::refresh(app),
-        (Internal::Settings, Some("import-bookmarks"), _, _) => import_bookmarks(app, &wv),
+        (Internal::Settings | Internal::Welcome, Some("import-bookmarks"), _, _) => import_bookmarks(app, &wv),
+        (Internal::Welcome, Some("welcome-finish"), _, _) => {
+            apply_setting(app, "welcome_done", "true");
+            load_home_newtab(app, &wv);
+        }
         (Internal::Settings, Some("export-bookmarks"), _, _) => export_bookmarks(app, &wv),
-        (Internal::Settings, Some("make-default"), _, _) => {
+        (Internal::Settings | Internal::Welcome, Some("make-default"), _, _) => {
             let ok = make_default_browser();
             run_js(&wv, &format!("window.zolithDefault && zolithDefault({ok})"));
         }
@@ -1400,6 +1441,10 @@ fn main() {
     css.load_from_data(CSS.as_bytes()).expect("valid css");
     gtk::StyleContext::add_provider_for_screen(
         &gdk::Screen::default().expect("screen"), &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    // colour theme: a second style sheet layered on top, swapped when the setting changes
+    let theme_provider = gtk::CssProvider::new();
+    gtk::StyleContext::add_provider_for_screen(
+        &gdk::Screen::default().expect("screen"), &theme_provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
 
     // ---- toolbar ----
     let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
@@ -1582,7 +1627,7 @@ fn main() {
         entry: entry.clone(), back: back.clone(), fwd: fwd.clone(), home_btn: home.clone(), reload_img, star_img,
         bm_bar, find_bar, find_entry: find_entry.clone(), status,
         ctx: Rc::new(RefCell::new(WebContext::new(Some(settings::data_dir())))),
-        history: suggest::load(), sug_pop, top: top.clone(), sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
+        theme_css: theme_provider.clone(), history: suggest::load(), sug_pop, top: top.clone(), sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
         last_typed: String::new(), inline_ok: false,
         http: suggest::new_session(),
         dls: vec![], next_dl: 0, dl_pending: false, dl_btn: dl_btn.clone(), dl_list: dl_list.clone(),
@@ -1737,6 +1782,7 @@ fn main() {
     }
 
     rebuild_bookmarks(&app);
+    let _ = theme_provider.load_from_data(theme_css(&app.borrow().settings.theme).as_bytes());
 
     // ---- startup tabs ----
     let (start, sel): (Vec<Option<String>>, usize) = {
@@ -1747,6 +1793,7 @@ fn main() {
         match start_arg() {
             Some(arg) => (vec![Some(page(&arg))], 0),
             None if private() => (vec![None], 0),
+            None if !s.welcome_done => (vec![Some(WELCOME_URI.to_string())], 0),
             None => match s.startup.as_str() {
                 "restore" => {
                     let (cur, urls) = load_session();
@@ -1815,6 +1862,20 @@ mod tests {
         assert!(html.contains(r#"const ENGINES = ["DuckDuckGo","Google","Bing","Brave","Startpage","Custom"];"#));
         assert!(html.contains("const ZOOMS = [67,75,80,90,100,110,125,150,200];"));
         assert!(html.contains(r#""engine":"DuckDuckGo""#));
+    }
+
+    #[test]
+    fn welcome_page_is_filled_in() {
+        let html = welcome_html(&Settings::default());
+        for p in ["__STATE__", "__ENGINES__", "__DEFAULT__"] {
+            assert!(!html.contains(p), "{p} left in page");
+        }
+        assert_eq!(internal("zolith://welcome"), Some(Internal::Welcome));
+        // the theme list in the page matches the ones Zolith knows
+        for (id, _) in settings::THEMES {
+            assert!(html.contains(&format!("['{id}'")), "{id}");
+            assert!(SETTINGS.contains(&format!("['{id}'")), "{id} missing from settings page");
+        }
     }
 
     #[test]
