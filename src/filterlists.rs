@@ -34,15 +34,27 @@ impl Converted {
         self.network.len() + self.exceptions.len() + self.hiding.len()
     }
 
-    /// The rules as one JSON array, hiding rules left out unless `with_hiding`.
+    /// Add another converted list (e.g. EasyPrivacy to EasyList).
+    pub fn merge(&mut self, other: Converted) {
+        self.network.extend(other.network);
+        self.exceptions.extend(other.exceptions);
+        self.hiding.extend(other.hiding);
+        self.skipped += other.skipped;
+    }
+
+    /// The rules as one JSON array, hiding rules left out unless `with_hiding`. Over budget,
+    /// blocking rules are dropped before exceptions: an exception that survives is harmless,
+    /// but a block rule whose exception was dropped breaks a site.
     pub fn json(&self, extra: &[String], with_hiding: bool) -> String {
+        let exceptions = &self.exceptions[..self.exceptions.len().min(MAX_RULES)];
+        let room = MAX_RULES - exceptions.len();
         let mut all: Vec<&str> = extra.iter().map(String::as_str).collect();
         all.extend(self.network.iter().map(String::as_str));
         if with_hiding {
             all.extend(self.hiding.iter().map(String::as_str));
         }
-        all.extend(self.exceptions.iter().map(String::as_str));
-        all.truncate(MAX_RULES);
+        all.truncate(room);
+        all.extend(exceptions.iter().map(String::as_str));
         format!("[{}]", all.join(","))
     }
 }
@@ -178,6 +190,27 @@ fn network_rule(line: &str) -> Option<(bool, String)> {
     Some((exception, format!(r#"{{"trigger":{{{trigger}}},"action":{{"type":"{action}"}}}}"#)))
 }
 
+/// A trailing `^` also means "end of the URL" (`||ads.example^` must block `https://ads.example`
+/// itself). WebKit has no "or" in patterns, so that case is a second rule: this builds the line
+/// for it, with the `^` replaced by an end anchor.
+fn end_twin(line: &str) -> Option<String> {
+    let (body, opts) = match line.rsplit_once('$') {
+        Some((p, o)) if !o.contains(['/', '*']) => (p, format!("${o}")),
+        _ => (line, String::new()),
+    };
+    body.strip_suffix('^').map(|b| format!("{b}|{opts}"))
+}
+
+/// All rules one list line stands for (one, or two with an end-of-URL twin).
+fn network_rules(line: &str) -> Option<(bool, Vec<String>)> {
+    let (exception, first) = network_rule(line)?;
+    let mut rules = vec![first];
+    if let Some((_, twin)) = end_twin(line).and_then(|t| network_rule(&t)) {
+        rules.push(twin);
+    }
+    Some((exception, rules))
+}
+
 pub fn convert(text: &str) -> Converted {
     let mut out = Converted::default();
     let mut selectors: Vec<String> = vec![];
@@ -198,9 +231,9 @@ pub fn convert(text: &str) -> Converted {
             out.skipped += 1;
             continue;
         }
-        match network_rule(line) {
-            Some((true, r)) => out.exceptions.push(r),
-            Some((false, r)) => out.network.push(r),
+        match network_rules(line) {
+            Some((true, r)) => out.exceptions.extend(r),
+            Some((false, r)) => out.network.extend(r),
             None => out.skipped += 1,
         }
     }
@@ -236,6 +269,16 @@ mod tests {
         assert!(r.contains("ignore-previous-rules"));
         assert!(one("|https://x.example/a.js|").unwrap().contains(r#""^https://x\\.example/a\\.js$""#));
         assert!(one("-banner-ad-").unwrap().contains("-banner-ad-"));
+    }
+
+    #[test]
+    fn trailing_separator_also_matches_the_end_of_the_url() {
+        let c = convert("||ads.example^\n||t.example^$third-party\n||x.example/path\n");
+        // a trailing ^ gives two plain rules; no pattern may contain an "or"
+        assert_eq!(c.network.len(), 5);
+        assert!(c.network.iter().any(|r| r.contains(r#"ads\\.example$""#)));
+        assert!(c.network.iter().any(|r| r.contains(r#"t\\.example$"#) && r.contains("third-party")));
+        assert!(c.network.iter().all(|r| !r.contains("|$") && !r.contains(")|")), "{:?}", c.network);
     }
 
     #[test]
@@ -279,7 +322,7 @@ mod tests {
                     ##.ad-banner\n##div:has(.x)\nsite.com##.sidebar-ad\nsite.com#@#.ad\n##.ad-banner\n/regex/\n\
                     ||tracker.example^$third-party\n";
         let c = convert(list);
-        assert_eq!(c.network.len(), 2);
+        assert_eq!(c.network.len(), 4); // two ^ rules, each with an end-of-URL twin
         assert_eq!(c.exceptions.len(), 1);
         assert_eq!(c.hiding.len(), 1); // one generic selector (deduplicated); site-specific and :has skipped
         assert!(c.hiding[0].contains(r#""selector":".ad-banner""#));
@@ -296,5 +339,23 @@ mod tests {
         let list: String = (0..MAX_RULES + 50).map(|i| format!("||host{i}.example^\n")).collect();
         let json = convert(&list).json(&[], true);
         assert_eq!(json.matches(r#""type":"block""#).count(), MAX_RULES);
+    }
+
+    #[test]
+    fn exceptions_survive_an_over_budget_list() {
+        let mut c = convert(&(0..MAX_RULES + 10).map(|i| format!("||host{i}.example^\n")).collect::<String>());
+        c.merge(convert("@@||good.example^\n"));
+        let json = c.json(&[], true);
+        assert_eq!(json.matches(r#""type":"block""#).count(), MAX_RULES - 2); // the exception and its twin keep their places
+        assert!(json.ends_with(r#"{"trigger":{"url-filter":"^[^:]+://+([^:/]+\\.)?good\\.example$"},"action":{"type":"ignore-previous-rules"}}]"#), "{json}");
+    }
+
+    #[test]
+    fn merging_two_lists_keeps_exceptions_last() {
+        let mut c = convert("||ads.example^\n##.ad\n");
+        c.merge(convert("@@||ads.example/ok.js\n||tracker.example^\n##.track\n"));
+        assert_eq!((c.network.len(), c.exceptions.len(), c.hiding.len()), (4, 1, 2));
+        let json = c.json(&[], true);
+        assert!(json.find("ignore-previous-rules").unwrap() > json.find("css-display-none").unwrap());
     }
 }

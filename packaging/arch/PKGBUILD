@@ -1,0 +1,26 @@
+# Unofficial and untested: written from the build instructions, not built on Arch.
+pkgname=zolith
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="A fast, minimal web browser for Linux, built with Rust, GTK and WebKit"
+arch=('x86_64')
+url="https://github.com/ash262049-png/zolith"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  cargo build --release --locked
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/zolith "$pkgdir/usr/bin/zolith"
+  install -Dm644 assets/zolith.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/zolith.png"
+  sed 's|@EXEC@|/usr/bin/zolith|' packaging/zolith.desktop > zolith.desktop
+  install -Dm644 zolith.desktop "$pkgdir/usr/share/applications/zolith.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

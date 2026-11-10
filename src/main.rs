@@ -1,6 +1,8 @@
 mod adblock;
+mod bookmarks;
 mod downloads;
 mod filterlists;
+mod lists;
 mod menus;
 mod settings;
 mod suggest;
@@ -196,11 +198,13 @@ fn newtab_html(s: &Settings) -> String {
 fn settings_html(s: &Settings) -> String {
     let engines: Vec<String> = settings::ENGINES.iter().map(|e| e.0).chain([settings::CUSTOM]).map(quote).collect();
     let zooms: Vec<String> = settings::ZOOMS.iter().map(|z| z.to_string()).collect();
+    let ready = if adblock::is_ready() { "true" } else if adblock::compiling() { "null" } else { "false" };
     SETTINGS
         .replace("__STATE__", &s.to_json())
         .replace("__ENGINES__", &format!("[{}]", engines.join(",")))
         .replace("__ZOOMS__", &format!("[{}]", zooms.join(",")))
-        .replace("__ADBLOCK_READY__", if adblock::is_ready() { "true" } else { "false" })
+        .replace("__ADBLOCK_READY__", ready)
+        .replace("__COMMUNITY__", &lists::status_json())
         .replace("__VERSION__", env!("CARGO_PKG_VERSION"))
         .replace("__DEFAULT__", if is_default_browser() { "true" } else { "false" })
 }
@@ -827,7 +831,7 @@ fn suggest_enter(app: &Sh, typed: &str) {
 
 /// Change one setting, save it, and update everything that depends on it.
 fn apply_setting(app: &Sh, key: &str, value: &str) {
-    let (views, adblock, zoom) = {
+    let (views, zoom, filter) = {
         let Ok(mut a) = app.try_borrow_mut() else { return };
         let old = a.settings.clone();
         if !a.settings.set(key, value) {
@@ -836,14 +840,15 @@ fn apply_setting(app: &Sh, key: &str, value: &str) {
         a.settings.save();
         a.sync_bars();
         let views: Vec<_> = a.tabs.iter().map(|t| t.wv.clone()).collect();
-        let adblock = (old.adblock != a.settings.adblock).then_some(a.settings.adblock);
         let zoom = (old.zoom != a.settings.zoom).then_some((old.zoom as f64 / 100.0, a.settings.zoom as f64 / 100.0));
-        (views, adblock, zoom)
+        let filter = key == "adblock" || key == "community";
+        (views, zoom, filter)
     };
+    if filter {
+        // recompiles the rule list in the background and applies it to every tab
+        lists::changed(app);
+    }
     for wv in &views {
-        if let Some(on) = adblock {
-            adblock::apply(wv, on);
-        }
         // tabs the user zoomed by hand keep their zoom
         if let Some((old, new)) = zoom {
             if (wv.zoom_level() - old).abs() < 0.001 {
@@ -879,6 +884,9 @@ fn handle_ipc(app: &Sh, id: u32, msg: &str) {
             }
         }
         (Internal::Settings, Some("pick-download-dir"), _, _) => pick_download_dir(app, &wv),
+        (Internal::Settings, Some("update-lists"), _, _) => lists::refresh(app),
+        (Internal::Settings, Some("import-bookmarks"), _, _) => import_bookmarks(app, &wv),
+        (Internal::Settings, Some("export-bookmarks"), _, _) => export_bookmarks(app, &wv),
         (Internal::Settings, Some("make-default"), _, _) => {
             let ok = make_default_browser();
             run_js(&wv, &format!("window.zolithDefault && zolithDefault({ok})"));
@@ -938,6 +946,73 @@ fn pick_download_dir(app: &Sh, wv: &webkit2gtk::WebView) {
     let Some(dir) = dialog.filename().and_then(|p| p.to_str().map(str::to_string)) else { return };
     apply_setting(app, "download_dir", &dir);
     run_js(wv, &format!("window.zolithDownloadDir && zolithDownloadDir({})", quote(&dir)));
+}
+
+/// A native HTML file chooser for bookmark import/export.
+fn choose_bookmark_file(app: &Sh, save: bool) -> Option<PathBuf> {
+    let win = app.try_borrow().ok()?.win.clone();
+    let (title, action, accept) = if save {
+        ("Export bookmarks", gtk::FileChooserAction::Save, "Save")
+    } else {
+        ("Import bookmarks", gtk::FileChooserAction::Open, "Import")
+    };
+    let dialog = gtk::FileChooserNative::new(Some(title), Some(&win), action, Some(accept), Some("Cancel"));
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Bookmark files (HTML)"));
+    filter.add_pattern("*.html");
+    filter.add_pattern("*.htm");
+    dialog.add_filter(filter);
+    if save {
+        dialog.set_current_name("bookmarks.html");
+        dialog.set_do_overwrite_confirmation(true);
+    }
+    let path = if dialog.run() == gtk::ResponseType::Accept { dialog.filename() } else { None };
+    dialog.destroy();
+    path
+}
+
+fn bookmark_reply(wv: &webkit2gtk::WebView, json: &str) {
+    run_js(wv, &format!("window.zolithBookmarks && zolithBookmarks({json})"));
+}
+
+fn import_bookmarks(app: &Sh, wv: &webkit2gtk::WebView) {
+    let Some(path) = choose_bookmark_file(app, false) else {
+        return bookmark_reply(wv, r#"{"ok":false,"cancelled":true}"#);
+    };
+    let text = match bookmarks::read_file(&path) {
+        Ok(t) => t,
+        Err(e) => return bookmark_reply(wv, &format!(r#"{{"ok":false,"error":{}}}"#, quote(&e))),
+    };
+    let imported = bookmarks::parse(&text);
+    if imported.is_empty() {
+        return bookmark_reply(wv, r#"{"ok":false,"error":"No bookmarks were found in that file"}"#);
+    }
+    let (added, total) = match app.try_borrow_mut() {
+        Ok(mut a) => {
+            let added = bookmarks::merge(&mut a.marks, imported);
+            save_marks(&a.marks);
+            (added, a.marks.len())
+        }
+        Err(_) => return bookmark_reply(wv, r#"{"ok":false,"error":"Zolith was busy; try again"}"#),
+    };
+    rebuild_bookmarks(app);
+    bookmark_reply(wv, &format!(r#"{{"ok":true,"action":"import","added":{added},"total":{total}}}"#));
+}
+
+fn export_bookmarks(app: &Sh, wv: &webkit2gtk::WebView) {
+    let Some(path) = choose_bookmark_file(app, true) else {
+        return bookmark_reply(wv, r#"{"ok":false,"cancelled":true}"#);
+    };
+    let marks = app.try_borrow().map(|a| a.marks.clone()).unwrap_or_default();
+    let total = marks.len();
+    if let Err(e) = fs::write(&path, bookmarks::export(&marks)) {
+        return bookmark_reply(wv, &format!(r#"{{"ok":false,"error":{}}}"#, quote(&e.to_string())));
+    }
+    let shown = path.to_string_lossy();
+    bookmark_reply(wv, &format!(
+        r#"{{"ok":true,"action":"export","total":{total},"path":{}}}"#,
+        quote(&shown)
+    ));
 }
 
 fn toggle_bookmark(app: &Sh) {
@@ -1499,8 +1574,6 @@ fn main() {
 
     // ---- state ----
     let settings = Settings::load();
-    let extra = fs::read_to_string(settings::config_dir().join("blocklist.txt")).unwrap_or_default();
-    adblock::init(&settings::data_dir(), &extra);
     let app: Sh = Rc::new(RefCell::new(App {
         next_id: 0, cur: 0, tabs: vec![], closed: vec![], marks: load_marks(), settings,
         downloads_hooked: false, fullscreen: false, layout_pending: false, win: win.clone(),
@@ -1514,6 +1587,9 @@ fn main() {
         http: suggest::new_session(),
         dls: vec![], next_dl: 0, dl_pending: false, dl_btn: dl_btn.clone(), dl_list: dl_list.clone(),
     }));
+
+    // load the cached filter lists and compile in the background; refresh them if stale
+    lists::init(&app);
 
     // ---- wiring ----
     {

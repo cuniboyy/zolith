@@ -34,6 +34,8 @@ pub struct Settings {
     pub show_home: bool,
     pub show_bookmarks: bool,
     pub adblock: bool,
+    /// Also use the downloaded community filter lists (EasyList, EasyPrivacy).
+    pub community: bool,
     /// Ask the search engine for suggestions while typing (sends what you type to it).
     pub suggest: bool,
     /// One of `STARTUPS`.
@@ -50,7 +52,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             engine: ENGINES[0].0.into(), custom: String::new(), home: String::new(),
-            show_home: true, show_bookmarks: true, adblock: true, suggest: true,
+            show_home: true, show_bookmarks: true, adblock: true, community: true, suggest: true,
             startup: STARTUPS[0].into(), startup_page: String::new(), zoom: 100, download_dir: String::new(),
         }
     }
@@ -81,12 +83,13 @@ impl Settings {
             "startup_page" => self.startup_page = v.into(),
             "zoom" => match v.parse() { Ok(z) if ZOOMS.contains(&z) => self.zoom = z, _ => return false },
             "download_dir" if v.is_empty() || v.starts_with('/') => self.download_dir = v.into(),
-            "show_home" | "show_bookmarks" | "adblock" | "suggest" => {
+            "show_home" | "show_bookmarks" | "adblock" | "community" | "suggest" => {
                 let Some(b) = flag(v) else { return false };
                 match key {
                     "show_home" => self.show_home = b,
                     "show_bookmarks" => self.show_bookmarks = b,
                     "suggest" => self.suggest = b,
+                    "community" => self.community = b,
                     _ => self.adblock = b,
                 }
             }
@@ -118,7 +121,7 @@ impl Settings {
         vec![
             ("engine", self.engine.clone()), ("custom", self.custom.clone()), ("home", self.home.clone()),
             ("show_home", self.show_home.to_string()), ("show_bookmarks", self.show_bookmarks.to_string()),
-            ("adblock", self.adblock.to_string()), ("suggest", self.suggest.to_string()),
+            ("adblock", self.adblock.to_string()), ("community", self.community.to_string()), ("suggest", self.suggest.to_string()),
             ("startup", self.startup.clone()),
             ("startup_page", self.startup_page.clone()), ("zoom", self.zoom.to_string()),
             ("download_dir", self.download_dir.clone()),
