@@ -176,7 +176,13 @@ fn ask(app: &Sh, req: PermissionRequest, site: String, items: Vec<(&'static str,
     a.perm_active = Some(Prompt { site: site.clone(), keys, reqs: reqs.clone() });
     let bubble = a.perm_bubble.clone();
     for c in bubble.children() { bubble.remove(&c) }
-    bubble.set_border_width(16);
+    // padding as margins on an inner box (a border width on the bubble itself didn't take)
+    let inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    inner.set_margin_top(14);
+    inner.set_margin_bottom(16);
+    inner.set_margin_start(16);
+    inner.set_margin_end(16);
+    bubble.pack_start(&inner, true, true, 0);
 
     let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let title = gtk::Label::new(Some(&format!("{site} wants to")));
@@ -189,7 +195,7 @@ fn ask(app: &Sh, req: PermissionRequest, site: String, items: Vec<(&'static str,
     close.set_relief(gtk::ReliefStyle::None);
     close.set_tooltip_text(Some("Close"));
     head.pack_end(&close, false, false, 0);
-    bubble.pack_start(&head, false, false, 0);
+    inner.pack_start(&head, false, false, 0);
 
     for (key, phrase) in &items {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -198,7 +204,7 @@ fn ask(app: &Sh, req: PermissionRequest, site: String, items: Vec<(&'static str,
         l.set_xalign(0.0);
         row.pack_start(&l, true, true, 0);
         row.set_margin_top(10);
-        bubble.pack_start(&row, false, false, 0);
+        inner.pack_start(&row, false, false, 0);
     }
 
     // answered once, whichever way: a button, the close button, or the page going away
@@ -244,7 +250,7 @@ fn ask(app: &Sh, req: PermissionRequest, site: String, items: Vec<(&'static str,
         }
         let answer = answer.clone();
         b.connect_clicked(move |_| answer(allow, remember));
-        bubble.pack_start(&b, false, false, 0);
+        inner.pack_start(&b, false, false, 0);
     }
     let a2 = answer.clone();
     close.connect_clicked(move |_| a2(false, false));
@@ -252,9 +258,13 @@ fn ask(app: &Sh, req: PermissionRequest, site: String, items: Vec<(&'static str,
     a.perm_pending = Some(Box::new(move || answer(false, false)));
 
     let (x, y) = a.entry.translate_coordinates(&a.top, 0, 0).unwrap_or((0, 0));
-    bubble.set_margin_start(x.max(0) + 8);
+    // keep the whole bubble inside the window, even a narrow one
+    let room = (a.top.allocated_width() - 330 - 8).max(0);
+    bubble.set_margin_start((x.max(0) + 8).min(room));
     bubble.set_margin_top((y + a.entry.allocated_height() + 6).max(0));
-    bubble.show_all();
+    // the bubble is no-show-all, so show_all() on it would do nothing: show its parts, then it
+    for c in bubble.children() { c.show_all() }
+    bubble.show();
 }
 
 /// Everything a page can ask for, in the order shown in the site panel.
