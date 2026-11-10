@@ -137,6 +137,8 @@ struct App {
     top: gtk::Overlay,
     sug_list: gtk::ListBox,
     sug_rows: Vec<Row>,
+    /// The search engine's latest suggestions, kept while typing so the list doesn't collapse and regrow.
+    sug_online: Vec<String>,
     /// Bumped on every keystroke so slow suggestion replies for old text are ignored.
     sug_seq: u32,
     /// What the user had typed before the last keystroke (without any completion we added).
@@ -781,8 +783,11 @@ fn suggest_typed(app: &Sh, typed: &str) {
     a.inline_ok = !deleted;
     a.last_typed = typed.to_string();
     let (seq, engine, ask) = (a.sug_seq, a.settings.engine.clone(), a.settings.suggest && !is_address(&text));
+    // keep showing the last search suggestions that still fit what is typed (until fresh ones arrive)
+    let lower = text.to_lowercase();
+    let keep: Vec<String> = a.sug_online.iter().filter(|s| s.to_lowercase().starts_with(&lower)).cloned().collect();
     drop(a);
-    suggest_render(app, &text, &[], true);
+    suggest_render(app, &text, &keep, true);
     if ask && settings::suggest_template(&engine).is_some() {
         let app = app.clone();
         // wait for a pause in typing so one query goes out per word, not per key
@@ -795,7 +800,10 @@ fn suggest_typed(app: &Sh, typed: &str) {
             let text2 = text.clone();
             suggest::fetch(&http, &engine, &text, move |list| {
                 let current = app2.try_borrow().map(|a| a.sug_seq == seq && a.entry.has_focus()).unwrap_or(false);
-                if current && !list.is_empty() { suggest_render(&app2, &text2, &list, false) }
+                if current && !list.is_empty() {
+                    with(&app2, |a| a.sug_online = list.clone());
+                    suggest_render(&app2, &text2, &list, false)
+                }
             });
         });
     }
@@ -850,6 +858,12 @@ fn suggest_render(app: &Sh, text: &str, online: &[String], complete: bool) {
     for s in online.iter().filter(|s| s.to_lowercase() != typed).take(5) {
         rows.push(Row { kind: Kind::Search, text: s.clone(), detail: String::new(), url: to_url(s, &template) });
     }
+    // identical to what is already showing: leave it alone (rebuilding is what flickers)
+    let was_visible = a.sug_pop.is_visible();
+    if was_visible && a.sug_rows == rows {
+        return;
+    }
+    let shrank = rows.len() < a.sug_rows.len();
     for c in a.sug_list.children() { a.sug_list.remove(&c) }
     for r in &rows {
         let bx = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -879,8 +893,10 @@ fn suggest_render(app: &Sh, text: &str, online: &[String], complete: bool) {
     a.sug_list.set_size_request(a.entry.allocated_width(), -1);
     a.sug_list.select_row(a.sug_list.row_at_index(0).as_ref());
     a.sug_pop.show();
-    // the list may be shorter than last time: repaint what it no longer covers
-    a.repaint();
+    // only a shorter list (or a newly opened one) leaves pixels behind that need repainting
+    if shrank || !was_visible {
+        a.repaint();
+    }
 }
 
 /// Up/Down in the address bar move through the dropdown.
@@ -1679,7 +1695,7 @@ fn main() {
         entry: entry.clone(), back: back.clone(), fwd: fwd.clone(), home_btn: home.clone(), reload_img, star_img,
         bm_bar, find_bar, find_entry: find_entry.clone(), status,
         ctx: Rc::new(RefCell::new(WebContext::new(Some(settings::data_dir())))),
-        theme_css: theme_provider.clone(), perms: if private() { Default::default() } else { permissions::load() }, perm_bubble, perm_pending: None, perm_active: None, perm_queue: vec![], history: suggest::load(), sug_pop, top: top.clone(), sug_list: sug_list.clone(), sug_rows: vec![], sug_seq: 0,
+        theme_css: theme_provider.clone(), perms: if private() { Default::default() } else { permissions::load() }, perm_bubble, perm_pending: None, perm_active: None, perm_queue: vec![], history: suggest::load(), sug_pop, top: top.clone(), sug_list: sug_list.clone(), sug_rows: vec![], sug_online: vec![], sug_seq: 0,
         last_typed: String::new(), inline_ok: false,
         http: suggest::new_session(),
         dls: vec![], next_dl: 0, dl_pending: false, dl_btn: dl_btn.clone(), dl_list: dl_list.clone(),
