@@ -107,6 +107,17 @@ Or just run it without installing: `cargo run --release`.
 
 > Developed and tested on Fedora with Wayland. Other distros and X11 should work but haven't been tried.
 
+## Moving over from Firefox
+
+`scripts/import-firefox.py` copies your Firefox bookmarks, history and cookies into Zolith (it needs Python 3). Close Zolith first, then run:
+
+```bash
+scripts/import-firefox.py --dry-run   # see what it would import, change nothing
+scripts/import-firefox.py             # do it
+```
+
+It reads a copy of Firefox's files, merges with what Zolith already has, and backs up Zolith's files first. Cookies keep you signed in to sites; add `--no-cookies` to skip them. Saved passwords can't be imported: Firefox encrypts them, and Zolith has no password manager yet.
+
 ## Keyboard shortcuts
 
 | | |
