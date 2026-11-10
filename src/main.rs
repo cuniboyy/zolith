@@ -326,7 +326,7 @@ fn icon_button(icon: &str) -> (gtk::Button, gtk::Image) {
 fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("Winty")
+        .with_title("Zolith")
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
         .with_visible(false)
         .build(&event_loop)
