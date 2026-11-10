@@ -139,6 +139,7 @@ fn decide_or_ask(app: &Sh, req: PermissionRequest, site: String, items: Items) {
 /// Close the prompt (if one is showing) and refuse everything waiting: the page has gone away.
 pub fn dismiss(a: &mut App) {
     a.perm_bubble.hide();
+    a.repaint();
     for (r, _, _) in a.perm_queue.drain(..) {
         r.deny();
     }
@@ -221,6 +222,7 @@ fn ask(app: &Sh, req: PermissionRequest, site: String, items: Vec<(&'static str,
             }
             bubble.hide();
             with(&app, |a| {
+                a.repaint();
                 a.perm_pending = None;
                 a.perm_active = None;
                 if remember && !private() {

@@ -335,6 +335,22 @@ fn unique_path(dir: &Path, name: &OsStr) -> PathBuf {
 }
 
 impl App {
+    /// Ask for a repaint of everything the floating panels (suggestions, permission bubble)
+    /// can sit over. The page view is drawn by WebKit and otherwise keeps stale pixels where a
+    /// panel used to be.
+    fn repaint(&self) {
+        self.top.queue_draw();
+        if let Some(t) = self.cur_tab() {
+            t.wv.queue_draw();
+            t.page.queue_draw();
+        }
+    }
+
+    fn close_suggestions(&self) {
+        self.sug_pop.hide();
+        self.repaint();
+    }
+
     fn cur_tab(&self) -> Option<&Tab> {
         self.tabs.iter().find(|t| t.id == self.cur)
     }
@@ -425,7 +441,7 @@ impl App {
             let ctx = t.head.style_context();
             if t.id == id { ctx.add_class("selected") } else { ctx.remove_class("selected") }
         }
-        self.sug_pop.hide();
+        self.close_suggestions();
         permissions::dismiss(self);
         self.show_url();
         self.set_status("");
@@ -708,7 +724,7 @@ fn run(app: &Sh, c: Cmd) {
                     // first Escape closes the suggestions, the next leaves the address bar
                     let open = app.try_borrow().map(|a| a.sug_pop.is_visible()).unwrap_or(false);
                     if open {
-                        with(app, |a| a.sug_pop.hide());
+                        with(app, |a| a.close_suggestions());
                     } else {
                         with(app, |a| a.show_url());
                         focus_current(app);
@@ -726,7 +742,7 @@ fn load_home_newtab(app: &Sh, wv: &webkit2gtk::WebView) {
 
 fn go(app: &Sh, input: &str) {
     if input.trim().is_empty() { return }
-    with(app, |a| { a.sug_seq += 1; a.sug_pop.hide() });
+    with(app, |a| { a.sug_seq += 1; a.close_suggestions() });
     let Some(wv) = cur_wv(app) else { return };
     if let Some(p) = internal(input) {
         load_internal(app, &wv, p);
@@ -747,7 +763,7 @@ fn kind_icon(k: Kind) -> &'static str {
 }
 
 fn hide_suggestions(app: &Sh) {
-    with(app, |a| { a.sug_seq += 1; a.sug_pop.hide() });
+    with(app, |a| { a.sug_seq += 1; a.close_suggestions() });
 }
 
 /// The user typed in the address bar: show matching bookmarks/history now, and ask the
@@ -863,6 +879,8 @@ fn suggest_render(app: &Sh, text: &str, online: &[String], complete: bool) {
     a.sug_list.set_size_request(a.entry.allocated_width(), -1);
     a.sug_list.select_row(a.sug_list.row_at_index(0).as_ref());
     a.sug_pop.show();
+    // the list may be shorter than last time: repaint what it no longer covers
+    a.repaint();
 }
 
 /// Up/Down in the address bar move through the dropdown.
